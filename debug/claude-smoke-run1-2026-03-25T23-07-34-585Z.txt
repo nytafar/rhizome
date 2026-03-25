@@ -1,0 +1,13 @@
+reason: claude_result_error_envelope
+
+run: 1
+
+exitCode: 1
+
+durationMs: 10319
+
+stderr:
+<empty>
+
+stdout:
+{"type":"result","subtype":"success","is_error":true,"duration_ms":12,"duration_api_ms":0,"num_turns":1,"result":"Not logged in · Please run /login","stop_reason":"stop_sequence","session_id":"c66bee8c-ef6b-480e-a5c9-e94cadacb879","total_cost_usd":0,"usage":{"input_tokens":0,"cache_creation_input_tokens":0,"cache_read_input_tokens":0,"output_tokens":0,"server_tool_use":{"web_search_requests":0,"web_fetch_requests":0},"service_tier":"standard","cache_creation":{"ephemeral_1h_input_tokens":0,"ephemeral_5m_input_tokens":0},"inference_geo":"","iterations":[],"speed":"standard"},"modelUsage":{},"permission_denials":[],"fast_mode_state":"off","uuid":"3b8656d6-de6e-4ca6-8258-8cc089a8d06a"}

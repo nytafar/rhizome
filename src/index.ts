@@ -12,3 +12,4 @@ export * from "./ai/executor";
 export * from "./ai/summary-converter";
 export * from "./stages/summarize";
 export * from "./zotero/sync";
+export * from "./vault/note-builder";

@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "build": "bun build --no-bundle src/index.ts",
-    "test": "bun test"
+    "test": "bun test",
+    "test:": "bun run scripts/test-colon.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
