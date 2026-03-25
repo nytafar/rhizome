@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" fill="none">
+  <defs>
+    <style>
+      .stem { stroke: #ffffff; stroke-width: 2.4; stroke-linecap: round; fill: none; }
+      .stem-thick { stroke: #ffffff; stroke-width: 3.2; stroke-linecap: round; fill: none; }
+      .node { fill: #ffffff; }
+      .node-ring { stroke: #ffffff; stroke-width: 2; fill: none; }
+      .tendril { stroke: #ffffff; stroke-width: 1.4; stroke-linecap: round; fill: none; opacity: 0.6; }
+      .micro { fill: #ffffff; opacity: 0.5; }
+    </style>
+  </defs>
+
+  <!--
+    Rhizome: A living network radiating from a dense core.
+    No single root. No hierarchy. Nodes connected to nodes.
+    Organic geometry — Obsidian-grade minimalism meets botanical growth.
+  -->
+
+  <!-- Primary structural connections (thick stems) -->
+  <!-- Core cluster → upper-left branch -->
+  <path class="stem-thick" d="M 256,258 C 238,240 210,228 188,210" />
+  <path class="stem-thick" d="M 188,210 C 168,192 148,178 128,168" />
+
+  <!-- Core → upper-right branch -->
+  <path class="stem-thick" d="M 260,252 C 282,234 308,222 332,208" />
+  <path class="stem" d="M 332,208 C 352,196 370,182 388,172" />
+
+  <!-- Core → lower-right branch -->
+  <path class="stem-thick" d="M 262,262 C 284,280 306,294 326,310" />
+  <path class="stem" d="M 326,310 C 344,324 360,340 374,354" />
+
+  <!-- Core → lower-left branch -->
+  <path class="stem-thick" d="M 252,264 C 234,282 214,298 194,312" />
+  <path class="stem" d="M 194,312 C 176,324 156,338 140,348" />
+
+  <!-- Core → left branch -->
+  <path class="stem-thick" d="M 248,258 C 222,258 196,256 172,252" />
+  <path class="stem" d="M 172,252 C 150,248 128,244 108,240" />
+
+  <!-- Core → right branch -->
+  <path class="stem" d="M 268,256 C 292,254 316,250 338,248" />
+
+  <!-- Core → upward branch -->
+  <path class="stem" d="M 258,248 C 260,224 264,200 268,178" />
+  <path class="stem" d="M 268,178 C 272,158 276,138 280,120" />
+
+  <!-- Core → downward branch -->
+  <path class="stem" d="M 254,270 C 250,294 244,316 238,338" />
+
+  <!-- Secondary branching (organic forks) -->
+  <!-- Upper-left sub-branches -->
+  <path class="stem" d="M 188,210 C 178,198 164,194 148,192" />
+  <path class="stem" d="M 128,168 C 116,156 100,150 84,148" />
+  <path class="stem" d="M 128,168 C 120,180 108,188 96,196" />
+
+  <!-- Upper-right sub-branches -->
+  <path class="stem" d="M 332,208 C 340,192 354,184 370,180" />
+  <path class="stem" d="M 388,172 C 400,164 414,160 426,158" />
+  <path class="stem" d="M 388,172 C 394,184 404,192 416,198" />
+
+  <!-- Lower-right sub-branches -->
+  <path class="stem" d="M 326,310 C 340,306 352,296 366,292" />
+  <path class="stem" d="M 374,354 C 386,362 396,374 404,386" />
+  <path class="stem" d="M 374,354 C 384,348 398,344 410,344" />
+
+  <!-- Lower-left sub-branches -->
+  <path class="stem" d="M 194,312 C 180,308 168,316 154,322" />
+  <path class="stem" d="M 140,348 C 128,356 114,362 100,366" />
+  <path class="stem" d="M 140,348 C 132,360 120,370 108,378" />
+
+  <!-- Left sub-branches -->
+  <path class="stem" d="M 172,252 C 164,238 154,228 142,220" />
+  <path class="stem" d="M 108,240 C 96,236 84,230 72,226" />
+
+  <!-- Upward sub-branches -->
+  <path class="stem" d="M 268,178 C 280,170 294,166 306,162" />
+  <path class="stem" d="M 280,120 C 288,108 298,100 310,94" />
+  <path class="stem" d="M 280,120 C 272,108 260,100 248,96" />
+
+  <!-- Downward sub-branches -->
+  <path class="stem" d="M 238,338 C 228,348 216,356 204,362" />
+  <path class="stem" d="M 238,338 C 244,352 252,364 260,374" />
+
+  <!-- Cross-connections (rhizomatic — nodes linking laterally, not just radially) -->
+  <path class="tendril" d="M 148,192 C 152,208 156,224 164,238" />
+  <path class="tendril" d="M 332,208 C 338,224 340,238 338,248" />
+  <path class="tendril" d="M 306,162 C 324,170 340,178 354,184" />
+  <path class="tendril" d="M 194,312 C 210,328 224,340 238,338" />
+  <path class="tendril" d="M 366,292 C 378,306 388,322 398,338" />
+  <path class="tendril" d="M 96,196 C 100,212 104,226 108,240" />
+  <path class="tendril" d="M 260,374 C 284,370 310,362 334,352" />
+  <path class="tendril" d="M 142,220 C 136,200 132,182 128,168" />
+
+  <!-- Core nodes (dense cluster — the living center) -->
+  <circle class="node" cx="256" cy="258" r="6" />
+  <circle class="node" cx="248" cy="250" r="3.5" />
+  <circle class="node" cx="264" cy="252" r="3.5" />
+  <circle class="node" cx="252" cy="266" r="3.5" />
+  <circle class="node" cx="262" cy="264" r="2.5" />
+  <circle class="node-ring" cx="256" cy="258" r="14" />
+
+  <!-- Primary branch nodes -->
+  <circle class="node" cx="188" cy="210" r="4.5" />
+  <circle class="node" cx="128" cy="168" r="4" />
+  <circle class="node" cx="332" cy="208" r="4.5" />
+  <circle class="node" cx="388" cy="172" r="3.5" />
+  <circle class="node" cx="326" cy="310" r="4.5" />
+  <circle class="node" cx="374" cy="354" r="3.5" />
+  <circle class="node" cx="194" cy="312" r="4.5" />
+  <circle class="node" cx="140" cy="348" r="3.5" />
+  <circle class="node" cx="172" cy="252" r="4" />
+  <circle class="node" cx="108" cy="240" r="3.5" />
+  <circle class="node" cx="268" cy="178" r="4" />
+  <circle class="node" cx="280" cy="120" r="3.5" />
+  <circle class="node" cx="238" cy="338" r="4" />
+  <circle class="node" cx="338" cy="248" r="3" />
+
+  <!-- Secondary / terminal nodes -->
+  <circle class="node" cx="148" cy="192" r="3" />
+  <circle class="node" cx="84" cy="148" r="2.5" />
+  <circle class="node" cx="96" cy="196" r="2.5" />
+  <circle class="node" cx="370" cy="180" r="3" />
+  <circle class="node" cx="426" cy="158" r="2.5" />
+  <circle class="node" cx="416" cy="198" r="2.5" />
+  <circle class="node" cx="366" cy="292" r="3" />
+  <circle class="node" cx="404" cy="386" r="2.5" />
+  <circle class="node" cx="410" cy="344" r="2.5" />
+  <circle class="node" cx="154" cy="322" r="3" />
+  <circle class="node" cx="100" cy="366" r="2.5" />
+  <circle class="node" cx="108" cy="378" r="2.5" />
+  <circle class="node" cx="142" cy="220" r="3" />
+  <circle class="node" cx="72" cy="226" r="2.5" />
+  <circle class="node" cx="306" cy="162" r="3" />
+  <circle class="node" cx="310" cy="94" r="2.5" />
+  <circle class="node" cx="248" cy="96" r="2.5" />
+  <circle class="node" cx="204" cy="362" r="3" />
+  <circle class="node" cx="260" cy="374" r="3" />
+
+  <!-- Micro-nodes (emerging growth — barely visible, suggests continuation) -->
+  <circle class="micro" cx="68" cy="140" r="1.5" />
+  <circle class="micro" cx="440" cy="152" r="1.5" />
+  <circle class="micro" cx="420" cy="396" r="1.5" />
+  <circle class="micro" cx="88" cy="386" r="1.5" />
+  <circle class="micro" cx="56" cy="222" r="1.5" />
+  <circle class="micro" cx="318" cy="84" r="1.5" />
+  <circle class="micro" cx="240" cy="84" r="1.5" />
+  <circle class="micro" cx="192" cy="370" r="1.5" />
+  <circle class="micro" cx="344" cy="360" r="1.5" />
+  <circle class="micro" cx="424" cy="206" r="1.5" />
+  <circle class="micro" cx="82" cy="200" r="1.5" />
+  <circle class="micro" cx="270" cy="386" r="1.5" />
+
+  <!-- Faint growth tendrils reaching to micro-nodes -->
+  <path class="tendril" d="M 84,148 C 78,144 72,142 68,140" />
+  <path class="tendril" d="M 426,158 C 432,156 436,154 440,152" />
+  <path class="tendril" d="M 404,386 C 410,390 416,394 420,396" />
+  <path class="tendril" d="M 108,378 C 98,382 92,384 88,386" />
+  <path class="tendril" d="M 310,94 C 314,90 316,86 318,84" />
+  <path class="tendril" d="M 248,96 C 244,92 242,88 240,84" />
+  <path class="tendril" d="M 260,374 C 264,380 268,384 270,386" />
+
+</svg>
