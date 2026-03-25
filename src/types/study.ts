@@ -41,13 +41,13 @@ export interface StudyRecord {
   zotero_key?: string;
   zotero_version?: number;
   zotero_sync_status?: "active" | "removed_upstream";
-  removed_upstream_at?: string;
-  removed_upstream_reason?: string;
+  removed_upstream_at?: string | null;
+  removed_upstream_reason?: string | null;
 
   // === Pipeline State ===
   pipeline_overall: PipelineOverallStatus;
   pipeline_steps: Record<string, PipelineStepState>;
-  pipeline_error?: string;
+  pipeline_error?: string | null;
   last_pipeline_run?: string;
 
   // === Asset Paths (relative to vault root) ===
