@@ -11,5 +11,11 @@ export * from "./lock/writer-lock";
 export * from "./ai/executor";
 export * from "./ai/summary-converter";
 export * from "./stages/summarize";
+export {
+  runVaultWriteStage,
+  type VaultWriteStageInput,
+  type VaultWriteStageResult,
+  type VaultWriteStageHandler,
+} from "./stages/vault-write";
 export * from "./zotero/sync";
 export * from "./vault/note-builder";
