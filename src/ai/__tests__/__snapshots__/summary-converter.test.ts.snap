@@ -1,0 +1,69 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`summaryJsonToMarkdown renders summarizer JSON output and metadata into markdown 1`] = `
+"---
+note_type: study_summary
+study_ref: smith2023ashwagandha
+skill_version: "1.0"
+model: "claude-opus-4-5"
+generated_at: "2026-03-25T17:30:00Z"
+source: "fulltext"
+---
+
+## TL;DR
+Ashwagandha reduced cortisol and improved sleep quality over 8 weeks.
+
+## Background & Rationale
+Chronic stress remains under-treated in working-age adults.
+
+## Methods
+Double-blind RCT, n=120 adults, 600 mg/day root extract vs placebo.
+
+## Key Findings
+Cortisol dropped 18% vs 3% (p<0.01), PSQI improved by 2.1 points.
+
+## Clinical / Practical Relevance
+Supports a standardized root-extract option for moderate stress symptoms.
+
+## Limitations
+Single center, short duration, self-reported sleep endpoint.
+
+## Compounds & Doses
+- **Withania somnifera root extract**: 600 mg/day once daily for 8 weeks
+- **Withanolides**: 5% standardized for unspecified
+
+## Open Questions
+Does efficacy persist beyond 12 weeks and in older populations?
+
+## Structured Extraction
+\`\`\`json
+{
+  "herb_species": [
+    "Withania somnifera"
+  ],
+  "common_names": [
+    "ashwagandha"
+  ],
+  "active_compounds": [
+    "withanolides"
+  ],
+  "plant_parts": [
+    "root"
+  ],
+  "extraction_types": [
+    "ethanolic"
+  ],
+  "dosages": [
+    "600 mg/day"
+  ],
+  "adverse_events": [
+    "mild GI discomfort"
+  ],
+  "study_type": "randomized controlled trial",
+  "sample_size": 120,
+  "duration": "8 weeks",
+  "population": "Adults with chronic stress"
+}
+\`\`\`
+"
+`;

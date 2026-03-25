@@ -24,6 +24,7 @@ type SpawnCapture = {
     stdout?: string;
     stderr?: string;
     timeout?: number;
+    env?: Record<string, string | undefined>;
   };
   writtenStdin?: string;
   stdinEnded: boolean;
@@ -35,7 +36,10 @@ function makeSpawnStub(params: {
   exitCode: number;
   capture: SpawnCapture;
 }): typeof Bun.spawn {
-  return ((cmd: string[], options: { timeout?: number }) => {
+  return ((cmd: string[], options: {
+    timeout?: number;
+    env?: Record<string, string | undefined>;
+  }) => {
     params.capture.cmd = cmd;
     params.capture.options = options;
 
@@ -84,7 +88,8 @@ describe("invokeClaudeCode", () => {
       "json",
       "--max-turns",
       "10",
-      "--bare",
+      "--model",
+      "opus",
       "--tools",
       "Read",
       "Process this study according to your instructions.",
@@ -96,6 +101,12 @@ describe("invokeClaudeCode", () => {
       stderr: "pipe",
       timeout: 12_345,
     });
+
+    const capturedEnv = capture.options?.env;
+    expect(capturedEnv).toBeDefined();
+    expect(typeof capturedEnv?.HOME).toBe("string");
+    expect(typeof capturedEnv?.XDG_CONFIG_HOME).toBe("string");
+
     expect(capture.writtenStdin).toBe("study input");
     expect(capture.stdinEnded).toBe(true);
 
@@ -103,6 +114,78 @@ describe("invokeClaudeCode", () => {
     expect(result.stdout).toBe(JSON.stringify({ ok: true }));
     expect(result.stderr).toBe("");
     expect(result.durationMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("uses explicit model override when provided", async () => {
+    const capture: SpawnCapture = { stdinEnded: false };
+
+    await invokeClaudeCode({
+      systemPromptFile: "skills/summarizer.md",
+      jsonSchema: { type: "object" },
+      maxTurns: 2,
+      model: "opus",
+      timeoutMs: 1000,
+      input: "x",
+      spawn: makeSpawnStub({
+        stdout: JSON.stringify({ ok: true }),
+        stderr: "",
+        exitCode: 0,
+        capture,
+      }),
+    });
+
+    const modelIndex = capture.cmd?.indexOf("--model") ?? -1;
+    expect(modelIndex).toBeGreaterThanOrEqual(0);
+    if (!capture.cmd || modelIndex < 0) {
+      throw new Error("Expected --model in command");
+    }
+    expect(capture.cmd[modelIndex + 1]).toBe("opus");
+  });
+
+  test("adds --bare only when explicitly enabled", async () => {
+    const capture: SpawnCapture = { stdinEnded: false };
+
+    await invokeClaudeCode({
+      systemPromptFile: "skills/summarizer.md",
+      jsonSchema: { type: "object" },
+      maxTurns: 2,
+      timeoutMs: 1000,
+      input: "x",
+      bare: true,
+      spawn: makeSpawnStub({
+        stdout: JSON.stringify({ ok: true }),
+        stderr: "",
+        exitCode: 0,
+        capture,
+      }),
+    });
+
+    expect(capture.cmd).toContain("--bare");
+  });
+
+  test("allows env override for Claude auth context", async () => {
+    const capture: SpawnCapture = { stdinEnded: false };
+
+    await invokeClaudeCode({
+      systemPromptFile: "skills/summarizer.md",
+      jsonSchema: { type: "object" },
+      maxTurns: 2,
+      timeoutMs: 1000,
+      input: "x",
+      env: {
+        HOME: "/Users/lasse",
+        XDG_CONFIG_HOME: "/Users/lasse/.config",
+      },
+      spawn: makeSpawnStub({
+        stdout: JSON.stringify({ ok: true }),
+        stderr: "",
+        exitCode: 0,
+        capture,
+      }),
+    });
+
+    expect(capture.options?.env?.HOME).toBe("/Users/lasse");
+    expect(capture.options?.env?.XDG_CONFIG_HOME).toBe("/Users/lasse/.config");
   });
 
   test("throws and persists debug artifact on non-zero exit", async () => {

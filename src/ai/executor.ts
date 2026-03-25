@@ -1,4 +1,5 @@
 import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 
 export interface ClaudeCodeResult {
   exitCode: number;
@@ -17,6 +18,7 @@ export interface InvokeClaudeCodeOptions {
   promptText?: string;
   tools?: string[];
   debugDir?: string;
+  env?: Record<string, string | undefined>;
   spawn?: typeof Bun.spawn;
 }
 
@@ -76,28 +78,50 @@ export async function invokeClaudeCode(
   const spawn = options.spawn ?? Bun.spawn;
   const startedAt = performance.now();
 
+  const userHome = options.env?.HOME ?? process.env.HOME ?? homedir();
+  const env = {
+    ...process.env,
+    ...options.env,
+    HOME: userHome,
+    XDG_CONFIG_HOME:
+      options.env?.XDG_CONFIG_HOME ??
+      process.env.XDG_CONFIG_HOME ??
+      `${userHome}/.config`,
+  };
+
+  const command = [
+    options.claudeBinary ?? "claude",
+    "-p",
+    "--system-prompt-file",
+    options.systemPromptFile,
+    "--json-schema",
+    JSON.stringify(options.jsonSchema),
+    "--output-format",
+    "json",
+    "--max-turns",
+    String(options.maxTurns),
+    "--model",
+    options.model ?? "opus",
+  ];
+
+  if (options.bare === true) {
+    command.push("--bare");
+  }
+
+  command.push(
+    "--tools",
+    (options.tools ?? ["Read"]).join(","),
+    options.promptText ?? "Process this study according to your instructions.",
+  );
+
   const proc = spawn(
-    [
-      options.claudeBinary ?? "claude",
-      "-p",
-      "--system-prompt-file",
-      options.systemPromptFile,
-      "--json-schema",
-      JSON.stringify(options.jsonSchema),
-      "--output-format",
-      "json",
-      "--max-turns",
-      String(options.maxTurns),
-      "--bare",
-      "--tools",
-      (options.tools ?? ["Read"]).join(","),
-      options.promptText ?? "Process this study according to your instructions.",
-    ],
+    command,
     {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
       timeout: options.timeoutMs,
+      env,
     },
   );
 

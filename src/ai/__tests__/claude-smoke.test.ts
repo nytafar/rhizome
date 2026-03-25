@@ -1,5 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 
 type SmokeResponse = {
   status: string;
@@ -34,6 +35,15 @@ Year: 2026
 
 # Abstract
 This is a contract smoke test input.`;
+
+function resolveClaudeEnv(): Record<string, string | undefined> {
+  const userHome = process.env.HOME ?? homedir();
+  return {
+    ...process.env,
+    HOME: userHome,
+    XDG_CONFIG_HOME: process.env.XDG_CONFIG_HOME ?? `${userHome}/.config`,
+  };
+}
 
 async function persistDebugFailure(params: {
   run: number;
@@ -70,7 +80,6 @@ async function runSmokeInvocation(run: number): Promise<SmokeRun> {
       JSON.stringify(SMOKE_SCHEMA),
       "--output-format",
       "json",
-      "--bare",
       "--tools",
       "Read",
       `Return JSON with status exactly \"smoke_ok_run_${run}\".`,
@@ -79,6 +88,7 @@ async function runSmokeInvocation(run: number): Promise<SmokeRun> {
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
+      env: resolveClaudeEnv(),
     },
   );
 
@@ -170,6 +180,13 @@ describe("Claude CLI invocation contract smoke", () => {
   test(
     "runs 3 times with JSON-schema constrained output",
     async () => {
+      if (process.env.RHIZOME_ENABLE_REAL_CLAUDE_SMOKE !== "1") {
+        console.info(
+          "[claude-smoke] skipped (set RHIZOME_ENABLE_REAL_CLAUDE_SMOKE=1 to run real Claude invocation)",
+        );
+        return;
+      }
+
       const claudeBinary = Bun.which("claude");
       if (!claudeBinary) {
         throw new Error("'claude' binary not found in PATH.");

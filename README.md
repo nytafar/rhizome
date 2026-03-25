@@ -55,7 +55,7 @@ Zotero  ──→  Rhizome  ──→  Obsidian Vault
   │            │  │  metadata  │
   │            │  │            │
   │            │  └──→ SQLite  │  Pipeline state, job queue,
-  │            │       (.siss/)│  audit log, sync state
+  │            │       (.rhizome/)│  audit log, sync state
   │            │               │
   │            └──→ Claude     │  AI summaries + classification
   │                 (CLI)      │  during configured time windows
@@ -302,8 +302,8 @@ your-vault/
 │       ├── taxonomy.json                   # Evolving classification system
 │       ├── studies.base                    # Obsidian Bases view
 │       └── review-queue.base
-└── .siss/
-    ├── siss.db                             # SQLite (system of record)
+└── .rhizome/
+    ├── rhizome.db                             # SQLite (system of record)
     ├── config.yaml                         # Configuration
     └── skills/                             # AI skill prompts
         ├── summarizer.md
@@ -314,18 +314,18 @@ your-vault/
 
 ## Specs
 
-Detailed architecture and design specs are in [`specs-v3/`](specs-v3/README.md):
+Detailed architecture and design specs are in [`specs/`](specs/README.md):
 
-| Spec | Purpose |
-|---|---|
-| 00 — Architecture Overview | System boundaries, principles, tech stack |
-| 01 — Schema & Vault Design | Data contract, frontmatter, folder structure |
-| 02 — Pipeline & Queue | Job queue, state machine, AI time windows |
-| 03 — Zotero Sync | Zotero API integration, delta sync |
-| 04 — PDF Parsing | PDF acquisition, Marker provider |
-| 05 — AI Skills | Claude Code invocation, summarizer, classifier |
-| 06 — Taxonomy | Self-improving classification system |
-| 07 — CLI & Config | Commands, configuration, setup flow |
+| Spec                       | Purpose                                        |
+| ----------------------------| ------------------------------------------------|
+| 00 — Architecture Overview | System boundaries, principles, tech stack      |
+| 01 — Schema & Vault Design | Data contract, frontmatter, folder structure   |
+| 02 — Pipeline & Queue      | Job queue, state machine, AI time windows      |
+| 03 — Zotero Sync           | Zotero API integration, delta sync             |
+| 04 — PDF Parsing           | PDF acquisition, Marker provider               |
+| 05 — AI Skills             | Claude Code invocation, summarizer, classifier |
+| 06 — Taxonomy              | Self-improving classification system           |
+| 07 — CLI & Config          | Commands, configuration, setup flow            |
 
 ---
 
