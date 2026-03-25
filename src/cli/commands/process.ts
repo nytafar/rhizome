@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, relative } from "node:path";
 import { loadConfig, type RhizomeConfig } from "../../config/loader";
 import { Database } from "../../db/database";
 import { WriterLock, WriterLockError } from "../../lock/writer-lock";
@@ -6,10 +6,15 @@ import {
   PipelineOrchestrator,
   type PipelineOrchestratorEvent,
   type ProcessResult,
-  type StageHandler,
 } from "../../pipeline/orchestrator";
-import { PipelineStep } from "../../types/pipeline";
+import {
+  PipelineOverallStatus,
+  PipelineStep,
+  type PipelineStepState,
+} from "../../types/pipeline";
 import { runSummarizeStage } from "../../stages/summarize";
+import { runVaultWriteStage } from "../../stages/vault-write";
+import type { StudyRecord } from "../../types/study";
 import type { Database as BunSQLiteDatabase } from "bun:sqlite";
 import { getVaultFolderStructurePaths } from "../../vault/folder-creator";
 
@@ -18,6 +23,18 @@ interface SummarizeStudyRow {
   title: string | null;
   doi: string | null;
   pmid: string | null;
+}
+
+interface VaultWriteStudyRow {
+  siss_id: string;
+  citekey: string;
+  title: string | null;
+  doi: string | null;
+  pmid: string | null;
+  source: string;
+  pipeline_overall: string;
+  pipeline_error: string | null;
+  pipeline_steps_json: string;
 }
 
 export interface ProcessCommandOptions {
@@ -88,11 +105,190 @@ function loadStudyForSummarize(db: BunSQLiteDatabase, sissId: string): Summarize
   return row;
 }
 
-function registerBuiltInStageHandlers(orchestrator: PipelineOrchestrator, params: {
+function parsePipelineSteps(raw: string): Record<string, PipelineStepState> {
+  try {
+    const parsed = JSON.parse(raw) as unknown;
+    if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+      return parsed as Record<string, PipelineStepState>;
+    }
+  } catch {
+    // fallback to empty object
+  }
+
+  return {};
+}
+
+function parseStringArray(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) {
+    return undefined;
+  }
+
+  const normalized = value
+    .map((entry) => (typeof entry === "string" ? entry.trim() : ""))
+    .filter((entry) => entry.length > 0);
+
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function extractSummaryPathFromJobMetadata(
+  db: BunSQLiteDatabase,
+  sissId: string,
+  vaultPath: string,
+): string | undefined {
+  const row = db
+    .query(
+      `
+      SELECT metadata
+      FROM jobs
+      WHERE siss_id = ?
+        AND stage = ?
+        AND status = 'complete'
+        AND metadata IS NOT NULL
+      ORDER BY id DESC
+      LIMIT 1;
+      `,
+    )
+    .get(sissId, PipelineStep.SUMMARIZE) as { metadata: string } | null;
+
+  if (!row?.metadata) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(row.metadata) as { summaryPath?: unknown };
+    if (typeof parsed.summaryPath !== "string" || parsed.summaryPath.trim().length === 0) {
+      return undefined;
+    }
+
+    const relativePath = relative(vaultPath, parsed.summaryPath);
+    if (relativePath.startsWith("..") || relativePath.length === 0) {
+      return undefined;
+    }
+
+    return relativePath.replaceAll("\\", "/");
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizePipelineOverall(value: string): PipelineOverallStatus {
+  if (Object.values(PipelineOverallStatus).includes(value as PipelineOverallStatus)) {
+    return value as PipelineOverallStatus;
+  }
+
+  return PipelineOverallStatus.NOT_STARTED;
+}
+
+function loadStudyForVaultWrite(params: {
   db: BunSQLiteDatabase;
+  sissId: string;
   config: RhizomeConfig;
-  cwd: string;
-}): void {
+  now: () => Date;
+}): StudyRecord {
+  const row = params.db
+    .query(
+      `
+      SELECT
+        siss_id,
+        citekey,
+        title,
+        doi,
+        pmid,
+        source,
+        pipeline_overall,
+        pipeline_error,
+        pipeline_steps_json
+      FROM studies
+      WHERE siss_id = ?
+      LIMIT 1;
+      `,
+    )
+    .get(params.sissId) as VaultWriteStudyRow | null;
+
+  if (!row) {
+    throw new Error(`Study not found for siss_id=${params.sissId}`);
+  }
+
+  const pipelineSteps = parsePipelineSteps(row.pipeline_steps_json);
+  const zoteroSyncStep = pipelineSteps[PipelineStep.ZOTERO_SYNC] as Record<string, unknown> | undefined;
+  const summaryPath = extractSummaryPathFromJobMetadata(params.db, row.siss_id, params.config.vault.path);
+
+  return {
+    siss_id: row.siss_id,
+    citekey: row.citekey,
+    title: row.title?.trim() || "Untitled study",
+    authors: [{ family: "Unknown", given: "Unknown" }],
+    year: params.now().getUTCFullYear(),
+    doi: row.doi ?? undefined,
+    pmid: row.pmid ?? undefined,
+    zotero_key: typeof zoteroSyncStep?.zotero_key === "string" ? zoteroSyncStep.zotero_key : undefined,
+    zotero_version:
+      typeof zoteroSyncStep?.zotero_version === "number" ? zoteroSyncStep.zotero_version : undefined,
+    zotero_sync_status:
+      zoteroSyncStep?.zotero_sync_status === "removed_upstream" ? "removed_upstream" : "active",
+    removed_upstream_at:
+      typeof zoteroSyncStep?.removed_upstream_at === "string"
+        ? zoteroSyncStep.removed_upstream_at
+        : null,
+    removed_upstream_reason:
+      typeof zoteroSyncStep?.removed_upstream_reason === "string"
+        ? zoteroSyncStep.removed_upstream_reason
+        : null,
+    pipeline_overall: normalizePipelineOverall(row.pipeline_overall),
+    pipeline_steps: pipelineSteps,
+    pipeline_error: row.pipeline_error,
+    source: row.source,
+    source_collections: parseStringArray(zoteroSyncStep?.source_collections),
+    summary_path: summaryPath,
+    pdf_available: false,
+    last_pipeline_run: params.now().toISOString().slice(0, 10),
+  };
+}
+
+function combineResults(...results: ProcessResult[]): ProcessResult {
+  return results.reduce<ProcessResult>(
+    (acc, item) => ({
+      processed: acc.processed + item.processed,
+      succeeded: acc.succeeded + item.succeeded,
+      failed: acc.failed + item.failed,
+      enqueued: acc.enqueued + item.enqueued,
+    }),
+    {
+      processed: 0,
+      succeeded: 0,
+      failed: 0,
+      enqueued: 0,
+    },
+  );
+}
+
+function registerBuiltInStageHandlers(
+  orchestrator: PipelineOrchestrator,
+  params: {
+    db: BunSQLiteDatabase;
+    config: RhizomeConfig;
+    cwd: string;
+    now: () => Date;
+  },
+): void {
+  orchestrator.registerStageHandler(PipelineStep.INGEST, async () => {
+    return {
+      metadata: {
+        stage: PipelineStep.INGEST,
+        action: "noop",
+      },
+    };
+  });
+
+  orchestrator.registerStageHandler(PipelineStep.ZOTERO_SYNC, async () => {
+    return {
+      metadata: {
+        stage: PipelineStep.ZOTERO_SYNC,
+        action: "noop",
+      },
+    };
+  });
+
   orchestrator.registerStageHandler(PipelineStep.SUMMARIZE, async ({ job }) => {
     const study = loadStudyForSummarize(params.db, job.sissId);
 
@@ -100,8 +296,8 @@ function registerBuiltInStageHandlers(orchestrator: PipelineOrchestrator, params
       study: {
         citekey: study.citekey,
         title: study.title ?? "Untitled study",
-        authors: [],
-        year: new Date().getUTCFullYear(),
+        authors: [{ family: "Unknown", given: "Unknown" }],
+        year: params.now().getUTCFullYear(),
         doi: study.doi ?? undefined,
         pmid: study.pmid ?? undefined,
         abstract: undefined,
@@ -121,6 +317,35 @@ function registerBuiltInStageHandlers(orchestrator: PipelineOrchestrator, params
         summaryPath: summary.summaryPath,
         model: summary.metadata.model,
         source: summary.metadata.source,
+      },
+    };
+  });
+
+  orchestrator.registerStageHandler(PipelineStep.VAULT_WRITE, async ({ job }) => {
+    const study = loadStudyForVaultWrite({
+      db: params.db,
+      sissId: job.sissId,
+      config: params.config,
+      now: params.now,
+    });
+
+    const result = await runVaultWriteStage({
+      db: params.db,
+      study,
+      vaultPath: params.config.vault.path,
+      vault: {
+        research_root: params.config.vault.research_root,
+        studies_folder: params.config.vault.studies_folder,
+        assets_folder: params.config.vault.assets_folder,
+      },
+      now: params.now,
+    });
+
+    return {
+      metadata: {
+        notePath: result.notePathRelative,
+        assetDir: result.assetDirRelative,
+        frontmatterValid: result.metadata.frontmatterValid,
       },
     };
   });
@@ -169,11 +394,16 @@ export async function runProcessCommand(
       db: database.db,
       config,
       cwd,
+      now: () => new Date(),
     });
 
     const aiMode = options.ai === true;
     const result = aiMode
-      ? await orchestrator.processAI({ batchSize: options.batch })
+      ? combineResults(
+          await orchestrator.processNonAI(),
+          await orchestrator.processAI({ batchSize: options.batch }),
+          await orchestrator.processNonAI(),
+        )
       : await orchestrator.processNonAI();
 
     stdout.write(
