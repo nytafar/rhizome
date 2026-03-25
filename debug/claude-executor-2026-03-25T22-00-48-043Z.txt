@@ -1,0 +1,11 @@
+reason: claude_result_error_envelope
+
+exitCode: 0
+
+durationMs: 0
+
+stderr:
+<empty>
+
+stdout:
+{"type":"result","is_error":true,"result":"Not logged in"}
