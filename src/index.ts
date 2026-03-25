@@ -2,3 +2,5 @@ export * from "./types/pipeline";
 export * from "./types/study";
 export * from "./schema/frontmatter";
 export * from "./utils/citekey";
+export * from "./config/schema";
+export * from "./config/loader";
