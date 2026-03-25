@@ -1,6 +1,15 @@
 #!/usr/bin/env bun
 import { Command } from "commander";
 import { runInitCommand, type InitCommandOptions } from "./commands/init";
+import { runSyncZoteroCommand, type SyncCommandOptions } from "./commands/sync";
+import { runProcessCommand, type ProcessCommandOptions } from "./commands/process";
+import { runStatusCommand, type StatusCommandOptions } from "./commands/status";
+import {
+  runLockStatusCommand,
+  runLockClearCommand,
+  type LockStatusCommandOptions,
+  type LockClearCommandOptions,
+} from "./commands/lock";
 
 export function createCliProgram(): Command {
   const program = new Command();
@@ -30,7 +39,57 @@ export function createCliProgram(): Command {
       await runInitCommand(options);
     });
 
+  program
+    .command("status")
+    .description("Show queue and pipeline status")
+    .option("--citekey <key>", "Show status for a specific study")
+    .option("--json", "Emit machine-readable JSON")
+    .action(async (options: StatusCommandOptions) => {
+      await runStatusCommand(options);
+    });
+
+  program
+    .command("process")
+    .description("Run pipeline processing")
+    .option("--ai", "Run AI-required stages")
+    .option("--batch <n>", "Maximum jobs to process", (value) => Number.parseInt(value, 10))
+    .action(async (options: ProcessCommandOptions) => {
+      await runProcessCommand(options);
+    });
+
+  const sync = program.command("sync").description("Sync external sources");
+  sync
+    .command("zotero")
+    .description("Sync studies from Zotero")
+    .option("--full", "Force full sync from version 0")
+    .option("--collection <name>", "Filter to a Zotero collection", collectRepeat, [])
+    .action(async (options: SyncCommandOptions) => {
+      await runSyncZoteroCommand(options);
+    });
+
+  const lock = program.command("lock").description("Inspect and manage writer lock");
+  lock
+    .command("status")
+    .description("Show lock holder and staleness")
+    .option("--json", "Emit machine-readable JSON")
+    .action(async (options: LockStatusCommandOptions) => {
+      await runLockStatusCommand(options);
+    });
+
+  lock
+    .command("clear")
+    .description("Clear writer lock")
+    .option("--force", "Required safety flag")
+    .option("--json", "Emit machine-readable JSON")
+    .action(async (options: LockClearCommandOptions) => {
+      await runLockClearCommand(options);
+    });
+
   return program;
+}
+
+function collectRepeat(value: string, previous: string[]): string[] {
+  return [...previous, value];
 }
 
 export async function runCli(argv = process.argv): Promise<void> {
