@@ -4,3 +4,5 @@ export * from "./schema/frontmatter";
 export * from "./utils/citekey";
 export * from "./config/schema";
 export * from "./config/loader";
+export * from "./db/schema";
+export * from "./db/database";
