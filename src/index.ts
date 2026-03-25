@@ -8,3 +8,4 @@ export * from "./db/schema";
 export * from "./db/database";
 export * from "./queue/job-queue";
 export * from "./lock/writer-lock";
+export * from "./ai/executor";
