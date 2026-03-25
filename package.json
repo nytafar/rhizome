@@ -1,0 +1,21 @@
+{
+  "name": "rhizome",
+  "module": "src/index.ts",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "build": "bun build --no-bundle src/index.ts",
+    "test": "bun test"
+  },
+  "devDependencies": {
+    "@types/bun": "latest"
+  },
+  "peerDependencies": {
+    "typescript": "^5"
+  },
+  "dependencies": {
+    "commander": "^14.0.3",
+    "gray-matter": "^4.0.3",
+    "zod": "^4.3.6"
+  }
+}
