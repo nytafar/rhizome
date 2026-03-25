@@ -54,9 +54,7 @@ describe("generateBaseCitekey", () => {
     });
 
     expect(citekey.length).toBeLessThanOrEqual(60);
-    expect(citekey).toBe(
-      "verylonglastnamewithdiacriticsooo2026hyperextraordinarilylongco",
-    );
+    expect(citekey).toBe("verylonglastnamewithdiacriticsooo2026hyperextraordinarilylon");
   });
 });
 

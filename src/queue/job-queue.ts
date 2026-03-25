@@ -201,7 +201,7 @@ export class JobQueue {
     return Number(result.lastInsertRowid);
   }
 
-  private toPatchArg(value: string | null | undefined): string {
+  private toPatchArg(value: string | null | undefined): string | null {
     return value === undefined ? KEEP_SENTINEL : value;
   }
 

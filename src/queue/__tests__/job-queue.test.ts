@@ -92,6 +92,10 @@ describe("JobQueue", () => {
       const [updated] = queue.query({ sissId: "SISS-010", stage: PipelineStep.SUMMARIZE });
 
       expect(updated).toBeDefined();
+      if (!updated) {
+        throw new Error("Expected updated job to exist");
+      }
+
       expect(updated.status).toBe("complete");
       expect(updated.retryCount).toBe(1);
       expect(updated.errorMessage).toBeNull();
