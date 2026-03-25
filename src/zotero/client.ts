@@ -178,6 +178,32 @@ export class ZoteroClient {
     return map;
   }
 
+  public async getDeletedSince(version: number): Promise<{
+    keys: string[];
+    libraryVersion: number;
+  }> {
+    const { data, response } = await this.requestJson<{ items?: unknown }>(
+      this.url(`/users/${this.config.userId}/deleted`, {
+        since: String(version),
+        format: "json",
+      }),
+    );
+
+    const keys = Array.isArray(data.items)
+      ? data.items
+          .map((key) => (typeof key === "string" ? key.trim() : ""))
+          .filter((key): key is string => key.length > 0)
+      : [];
+
+    const headerValue = response.headers.get("last-modified-version");
+    const parsedVersion = headerValue ? Number.parseInt(headerValue, 10) : Number.NaN;
+
+    return {
+      keys,
+      libraryVersion: Number.isFinite(parsedVersion) ? parsedVersion : version,
+    };
+  }
+
   public async ping(): Promise<boolean> {
     try {
       await this.requestText(

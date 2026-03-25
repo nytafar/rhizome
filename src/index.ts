@@ -11,3 +11,4 @@ export * from "./lock/writer-lock";
 export * from "./ai/executor";
 export * from "./ai/summary-converter";
 export * from "./stages/summarize";
+export * from "./zotero/sync";

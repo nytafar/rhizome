@@ -151,4 +151,23 @@ describe("ZoteroClient", () => {
     expect(events.some((event) => event.type === "retry" && event.reason === "429")).toBe(true);
     expect(events.some((event) => event.type === "retry" && event.reason === "5xx")).toBe(true);
   });
+
+  test("getDeletedSince returns deleted item keys and library version from header", async () => {
+    const client = new ZoteroClient(
+      { userId: "12345", apiKey: "secret", baseUrl: "https://api.test" },
+      {
+        fetchImpl: async () =>
+          createResponse({
+            headers: { "last-modified-version": "4287" },
+            body: { items: ["AAA", "BBB"] },
+          }),
+        sleep: async () => {},
+      },
+    );
+
+    await expect(client.getDeletedSince(4200)).resolves.toEqual({
+      keys: ["AAA", "BBB"],
+      libraryVersion: 4287,
+    });
+  });
 });
