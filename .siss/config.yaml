@@ -1,0 +1,103 @@
+# === Meta ===
+config_version: 1
+
+# === Vault ===
+vault:
+  path: "/var/folders/_1/n2brbt0n5y90rxnfktnj1pg00000gp/T/tmp.vUFQU9ekrK/vault"
+  research_root: "Research"
+  studies_folder: "studies"
+  assets_folder: "_assets"
+  study_notes_folder: "study-notes"
+  imports_folder: "_imports"
+  system_folder: "_system"
+
+# === Zotero ===
+zotero:
+  enabled: true
+  user_id: "12345"
+  api_key: "env:ZOTERO_API_KEY"
+  collections: []
+  skip_item_types:
+    - "note"
+    - "attachment"
+    - "annotation"
+    - "webpage"
+
+# === PDF ===
+pdf:
+  sources:
+    - "zotero"
+    - "unpaywall"
+    - "europepmc"
+  unpaywall_email: "test@example.com"
+  download_timeout_ms: 30000
+  max_file_size_mb: 100
+
+# === PDF Parser ===
+parser:
+  active_provider: "marker"
+  marker:
+    version: "1.6.0"
+    timeout_ms: 300000
+    force_ocr: false
+    python_env: ".siss-env"
+
+# === AI ===
+ai:
+  windows:
+    - "17:00-19:00"
+    - "23:00-01:00"
+  timezone: "Europe/Oslo"
+  batch_size: 20
+  cooldown_seconds: 30
+  strategy: "piped"
+  max_input_tokens: 80000
+  claude_binary: "claude"
+  summarizer:
+    skill_file: "summarizer.md"
+    max_turns: 10
+    timeout_ms: 300000
+  classifier:
+    skill_file: "classifier.md"
+    max_turns: 5
+    timeout_ms: 180000
+
+# === Taxonomy ===
+taxonomy:
+  auto_promote_threshold: 3
+  deprecation_days: 90
+  max_pending_before_review: 20
+  groups:
+    - name: "therapeutic_areas"
+      description: "Primary therapeutic/health areas"
+    - name: "mechanisms"
+      description: "Biological mechanisms of action"
+    - name: "indications"
+      description: "Clinical or product indications"
+    - name: "contraindications"
+      description: "Known contraindications"
+    - name: "drug_interactions"
+      description: "Known drug interactions"
+    - name: "research_gaps"
+      description: "Identified gaps in research"
+
+# === Pipeline ===
+pipeline:
+  max_retries: 3
+  single_writer: true
+  lock_path: ".siss/locks/mutator.lock"
+  lock_stale_minutes: 15
+  ai_required_stages:
+    - "summarize"
+    - "classify"
+  skip_stages: []
+
+# === Audit ===
+audit:
+  markdown_log: true
+  retain_debug_output: true
+
+# === Data ===
+data:
+  db_path: ".siss/siss.db"
+  skills_dir: ".siss/skills/"
