@@ -2,6 +2,7 @@ import { copyFile, mkdir, mkdtemp } from "node:fs/promises";
 import { basename, join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "../../../src/db/database";
+import { discoverWorkspaceConfig } from "../../../src/config/workspace-contract";
 import { PipelineStep } from "../../../src/types/pipeline";
 
 interface SummarizeFailureRow {
@@ -27,7 +28,12 @@ function extractDebugPath(errorMessage: string | null): string | undefined {
 }
 
 export async function captureSummarizeFailureEvidence(root: string): Promise<SummarizeFailureEvidence | null> {
-  const dbPath = join(root, ".siss", "siss.db");
+  const workspaceConfig = await discoverWorkspaceConfig(root);
+  if (workspaceConfig.kind === "missing") {
+    return null;
+  }
+
+  const dbPath = join(workspaceConfig.workspaceDir, "siss.db");
   if (!(await Bun.file(dbPath).exists())) {
     return null;
   }

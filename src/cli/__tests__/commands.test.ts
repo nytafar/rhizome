@@ -9,6 +9,7 @@ import { runSyncZoteroCommand } from "../commands/sync";
 import { runProcessCommand } from "../commands/process";
 import { runStatusCommand } from "../commands/status";
 import { runLockClearCommand, runLockStatusCommand } from "../commands/lock";
+import { CANONICAL_WORKSPACE_DIR, LEGACY_WORKSPACE_DIR } from "../../config/workspace-contract";
 import type { ZoteroItem } from "../../zotero/client";
 
 const INIT_ARGS = {
@@ -67,6 +68,24 @@ function makeFakeClient(items: ZoteroItem[]) {
   };
 }
 
+async function moveConfigToLegacyWorkspace(root: string, rewriteWorkspacePaths = false): Promise<void> {
+  const canonicalConfigPath = join(root, CANONICAL_WORKSPACE_DIR, "config.yaml");
+  const legacyConfigPath = join(root, LEGACY_WORKSPACE_DIR, "config.yaml");
+
+  const canonicalConfig = await Bun.file(canonicalConfigPath).text();
+  const legacyConfig = rewriteWorkspacePaths
+    ? canonicalConfig
+        .replaceAll(`${CANONICAL_WORKSPACE_DIR}/locks/mutator.lock`, `${LEGACY_WORKSPACE_DIR}/locks/mutator.lock`)
+        .replaceAll(`${CANONICAL_WORKSPACE_DIR}/siss.db`, `${LEGACY_WORKSPACE_DIR}/siss.db`)
+        .replaceAll(`${CANONICAL_WORKSPACE_DIR}/skills/`, `${LEGACY_WORKSPACE_DIR}/skills/`)
+    : canonicalConfig;
+
+  await mkdir(join(root, LEGACY_WORKSPACE_DIR, "locks"), { recursive: true });
+  await mkdir(join(root, LEGACY_WORKSPACE_DIR, "skills"), { recursive: true });
+  await Bun.write(legacyConfigPath, legacyConfig);
+  await rm(canonicalConfigPath, { force: true });
+}
+
 describe("CLI command handlers", () => {
   test("sync zotero imports studies and status reports queue + citekey detail", async () => {
     await withTempRhizome(async (root) => {
@@ -99,7 +118,7 @@ describe("CLI command handlers", () => {
       expect(overview.mode).toBe("overview");
       expect(overview.overview?.queue["ingest.queued"]).toBe(1);
 
-      const database = new Database({ path: join(root, ".siss", "siss.db") });
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
       database.init();
       const row = database.db
         .query("SELECT citekey FROM studies LIMIT 1;")
@@ -113,9 +132,41 @@ describe("CLI command handlers", () => {
     });
   });
 
+  test("status overview runs via legacy .rhizome config location after canonical config removal", async () => {
+    await withTempRhizome(async (root) => {
+      const item: ZoteroItem = {
+        key: "ITEM_LEGACY_001",
+        version: 7,
+        data: {
+          itemType: "journalArticle",
+          title: "Legacy Config Discovery Coverage",
+          creators: [{ creatorType: "author", firstName: "Alex", lastName: "Rivera" }],
+          date: "2024",
+          DOI: "10.1000/example.legacy",
+          collections: ["COLL_A"],
+        },
+      };
+
+      const syncResult = await runSyncZoteroCommand(
+        { full: true, collection: ["Adaptogens"] },
+        {
+          cwd: root,
+          createClient: () => makeFakeClient([item]),
+        },
+      );
+      expect(syncResult.newItems).toBe(1);
+
+      await moveConfigToLegacyWorkspace(root);
+
+      const overview = await runStatusCommand({ json: true }, { cwd: root });
+      expect(overview.mode).toBe("overview");
+      expect(overview.overview?.totals.studies).toBe(1);
+    });
+  });
+
   test("lock status and clear --force manage writer lock state", async () => {
     await withTempRhizome(async (root) => {
-      const lockPath = join(root, ".siss", "locks", "mutator.lock");
+      const lockPath = join(root, CANONICAL_WORKSPACE_DIR, "locks", "mutator.lock");
       const lock = new WriterLock({ lockPath });
       await lock.acquire("rhizome sync zotero", 4242);
 
@@ -143,22 +194,10 @@ describe("CLI command handlers", () => {
 
   test("lock status resolves legacy .rhizome workspace config when canonical config is absent", async () => {
     await withTempRhizome(async (root) => {
-      const canonicalConfigPath = join(root, ".siss", "config.yaml");
-      const legacyConfigPath = join(root, ".rhizome", "config.yaml");
-
-      const canonicalConfig = await Bun.file(canonicalConfigPath).text();
-      const legacyConfig = canonicalConfig
-        .replaceAll(".siss/locks/mutator.lock", ".rhizome/locks/mutator.lock")
-        .replaceAll(".siss/siss.db", ".rhizome/siss.db")
-        .replaceAll(".siss/skills/", ".rhizome/skills/");
-
-      await mkdir(join(root, ".rhizome", "locks"), { recursive: true });
-      await mkdir(join(root, ".rhizome", "skills"), { recursive: true });
-      await Bun.write(legacyConfigPath, legacyConfig);
-      await rm(canonicalConfigPath, { force: true });
+      await moveConfigToLegacyWorkspace(root, true);
 
       const status = await runLockStatusCommand({ json: true }, { cwd: root });
-      expect(status.lockPath).toBe(join(root, ".rhizome", "locks", "mutator.lock"));
+      expect(status.lockPath).toBe(join(root, LEGACY_WORKSPACE_DIR, "locks", "mutator.lock"));
       expect(status.active).toBe(false);
     });
   });

@@ -8,6 +8,7 @@ import { runProcessCommand } from "../../src/cli/commands/process";
 import { runStatusCommand } from "../../src/cli/commands/status";
 import { runLockClearCommand, runLockStatusCommand } from "../../src/cli/commands/lock";
 import { PipelineStep } from "../../src/types/pipeline";
+import { discoverWorkspaceConfig, CANONICAL_WORKSPACE_DIR } from "../../src/config/workspace-contract";
 import { runLivePreflight } from "../../tests/e2e/support/live-preflight";
 import { captureSummarizeFailureEvidence } from "../../tests/e2e/support/evidence";
 import type {
@@ -47,6 +48,25 @@ function writerBuffer() {
 
 function toErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+async function resolveWorkspaceRuntimePaths(root: string): Promise<{
+  workspaceDir: string;
+  dbPath: string;
+  skillsDir: string;
+  locksDir: string;
+}> {
+  const workspaceConfig = await discoverWorkspaceConfig(root);
+  if (workspaceConfig.kind === "missing") {
+    throw new Error(workspaceConfig.guidance);
+  }
+
+  return {
+    workspaceDir: workspaceConfig.workspaceDir,
+    dbPath: join(workspaceConfig.workspaceDir, "siss.db"),
+    skillsDir: join(workspaceConfig.workspaceDir, "skills"),
+    locksDir: join(workspaceConfig.workspaceDir, "locks"),
+  };
 }
 
 async function runCommand<T>(params: {
@@ -285,10 +305,12 @@ async function main(): Promise<void> {
   let workspaceRoot = "";
   let workspaceVault = "";
   let workspaceDbPath = "";
+  let workspaceRuntimePaths:
+    | Awaited<ReturnType<typeof resolveWorkspaceRuntimePaths>>
+    | undefined;
 
   workspaceRoot = await mkdtemp(join(tmpdir(), "rhizome-intelligence-evidence-"));
     workspaceVault = join(workspaceRoot, "vault");
-    workspaceDbPath = join(workspaceRoot, ".siss", "siss.db");
 
     bundle.workspace.root = workspaceRoot;
     bundle.workspace.vaultPath = workspaceVault;
@@ -325,7 +347,11 @@ async function main(): Promise<void> {
     bundle.commands.push(initRecord);
 
     if (initRecord.ok) {
-      const skillPath = join(workspaceRoot, ".siss", "skills", "summarizer.md");
+      workspaceRuntimePaths = await resolveWorkspaceRuntimePaths(workspaceRoot);
+      workspaceDbPath = workspaceRuntimePaths.dbPath;
+      bundle.workspace.dbPath = workspaceDbPath;
+
+      const skillPath = join(workspaceRuntimePaths.skillsDir, "summarizer.md");
       await Bun.write(skillPath, SUMMARIZER_SKILL);
     } else {
       bundle.failure = { step: "init", message: initRecord.errorMessage ?? "init failed" };
@@ -390,7 +416,7 @@ async function main(): Promise<void> {
       };
     }
 
-    bundle.dbSnapshot = await captureDbSnapshot(workspaceDbPath);
+    bundle.dbSnapshot = workspaceRuntimePaths ? await captureDbSnapshot(workspaceRuntimePaths.dbPath) : undefined;
 
     const studies = bundle.dbSnapshot?.studies ?? [];
     for (const study of studies) {
@@ -442,9 +468,14 @@ async function main(): Promise<void> {
     const fixturePath =
       lockBefore.ok && lockBefore.result && typeof lockBefore.result === "object" && "lockPath" in lockBefore.result
         ? String((lockBefore.result as { lockPath: string }).lockPath)
-        : join(workspaceRoot, ".siss", "locks", "mutator.lock");
+        : workspaceRuntimePaths
+          ? join(workspaceRuntimePaths.locksDir, "mutator.lock")
+          : join(workspaceRoot, CANONICAL_WORKSPACE_DIR, "locks", "mutator.lock");
 
-    await mkdir(join(workspaceRoot, ".siss", "locks"), { recursive: true });
+    const fallbackLocksDir = workspaceRuntimePaths
+      ? workspaceRuntimePaths.locksDir
+      : join(workspaceRoot, CANONICAL_WORKSPACE_DIR, "locks");
+    await mkdir(fallbackLocksDir, { recursive: true });
 
     const fixturePayload = {
       pid: 999999,

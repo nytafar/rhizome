@@ -11,6 +11,7 @@ import { runProcessCommand } from "../../src/cli/commands/process";
 import { runStatusCommand } from "../../src/cli/commands/status";
 import { runLivePreflight } from "./support/live-preflight";
 import { captureSummarizeFailureEvidence } from "./support/evidence";
+import { discoverWorkspaceConfig } from "../../src/config/workspace-contract";
 
 const livePreflight = await runLivePreflight();
 if (!livePreflight.ok) {
@@ -71,7 +72,12 @@ describe("intelligence loop e2e", () => {
           { cwd: root },
         );
 
-        const skillPath = join(root, ".siss", "skills", "summarizer.md");
+        const workspaceConfig = await discoverWorkspaceConfig(root);
+        if (workspaceConfig.kind === "missing") {
+          throw new Error(workspaceConfig.guidance);
+        }
+
+        const skillPath = join(workspaceConfig.workspaceDir, "skills", "summarizer.md");
         await Bun.write(skillPath, SUMMARIZER_SKILL);
 
         const syncResult = await runSyncZoteroCommand(
@@ -104,7 +110,7 @@ describe("intelligence loop e2e", () => {
         expect(overview.mode).toBe("overview");
         expect(overview.overview?.totals.studies).toBe(2);
 
-        const database = new Database({ path: join(root, ".siss", "siss.db") });
+        const database = new Database({ path: join(workspaceConfig.workspaceDir, "siss.db") });
         database.init();
 
         const studies = database.db
