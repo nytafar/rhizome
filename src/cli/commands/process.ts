@@ -62,6 +62,14 @@ export interface ProcessCommandDeps {
   onEvent?: (event: PipelineOrchestratorEvent) => void;
 }
 
+function normalizeCitekeyOption(citekey: string): string {
+  const normalized = citekey.trim();
+  if (normalized.length === 0) {
+    throw new Error("--citekey requires a non-empty value");
+  }
+  return normalized;
+}
+
 function resolveDbPath(cwd: string, config: RhizomeConfig): string {
   return join(cwd, config.data.db_path);
 }
@@ -91,17 +99,14 @@ function buildCommandLabel(options: ProcessCommandOptions): string {
   if (typeof options.batch === "number") {
     parts.push(`--batch ${options.batch}`);
   }
-  if (typeof options.citekey === "string" && options.citekey.trim().length > 0) {
-    parts.push(`--citekey ${options.citekey.trim()}`);
+  if (typeof options.citekey === "string") {
+    parts.push(`--citekey ${normalizeCitekeyOption(options.citekey)}`);
   }
   return parts.join(" ");
 }
 
 function resolveRhizomeIdByCitekey(db: BunSQLiteDatabase, citekey: string): string {
-  const normalized = citekey.trim();
-  if (normalized.length === 0) {
-    throw new Error("--citekey requires a non-empty value");
-  }
+  const normalized = normalizeCitekeyOption(citekey);
 
   const row = db
     .query(
@@ -456,7 +461,7 @@ export async function runProcessCommand(
 
   try {
     const targetRhizomeId =
-      typeof options.citekey === "string" && options.citekey.trim().length > 0
+      typeof options.citekey === "string"
         ? resolveRhizomeIdByCitekey(database.db, options.citekey)
         : undefined;
 

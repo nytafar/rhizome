@@ -267,6 +267,22 @@ describe("CLI command handlers", () => {
     });
   });
 
+  test("process --citekey rejects empty selector values", async () => {
+    await withTempRhizome(async (root) => {
+      await expect(runProcessCommand({ citekey: "   " }, { cwd: root })).rejects.toThrow(
+        "--citekey requires a non-empty value",
+      );
+    });
+  });
+
+  test("status --citekey rejects empty selector values", async () => {
+    await withTempRhizome(async (root) => {
+      await expect(runStatusCommand({ citekey: "   " }, { cwd: root })).rejects.toThrow(
+        "--citekey requires a non-empty value",
+      );
+    });
+  });
+
   test("lock status resolves legacy .rhizome workspace config when canonical config is absent", async () => {
     await withTempRhizome(async (root) => {
       await moveConfigToLegacyWorkspace(root, true);

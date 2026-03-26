@@ -1,6 +1,6 @@
 # 07 — CLI & Configuration
 
-**Version:** 0.2 | **Status:** Draft for review
+**Version:** 0.3 | **Status:** Draft for review
 **Depends on:** All other specs (CLI is the interface to everything)
 **Consumed by:** Users, agents
 
@@ -18,6 +18,11 @@ This spec defines the user-facing CLI, the configuration schema, the setup flow,
 - **Dry-run support**: destructive/bulk operations support `--dry-run`
 - **JSON output option**: `--json` flag on any command for machine parsing
 - **Strict single-writer mutation**: only one mutating command may run at once (lockfile enforced)
+
+### Compatibility Transition Note (M005)
+
+`--citekey` remains fully supported for first-build compatibility in `status` and `process` flows.
+Post-first-build, the selector path is planned to shift toward `rhizome_id`/DOI/PMID-based filters while preserving clear migration guidance in CLI help and docs.
 
 ## 3. Command Reference
 
@@ -42,9 +47,7 @@ rhizome add --doi 10.1234/xyz \
   --priority high                       # add with options
 
 rhizome status                            # queue overview: counts per stage
-rhizome status --citekey smith2023ashwa   # single study detail
-rhizome status --citekey smith2023ashwa --granular   # per-step status detail
-rhizome status --overall needs_attention  # all studies requiring intervention
+rhizome status --citekey smith2023ashwa   # single study detail (compat selector; planned deprecation after first stable build)
 rhizome status --json                     # machine-readable output
 
 rhizome list                              # list all studies
@@ -69,7 +72,7 @@ rhizome process                           # run all non-AI stages for queued stu
 rhizome process --ai                      # run AI stages (respects time windows)
 rhizome process --ai --now                # ignore time windows
 rhizome process --ai --batch 5            # limit to 5 studies this run
-rhizome process --citekey smith2023ashwa  # process specific study only
+rhizome process --citekey smith2023ashwa  # process specific study only (compat selector; planned deprecation after first stable build)
 
 # Mutating commands acquire global writer lock automatically
 # and fail fast if another mutating run is active.

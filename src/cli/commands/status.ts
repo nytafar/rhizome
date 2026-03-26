@@ -52,6 +52,14 @@ export interface StatusCommandDeps {
   loadConfigFn?: (configPath: string) => Promise<RhizomeConfig>;
 }
 
+function normalizeCitekeyOption(citekey: string): string {
+  const normalized = citekey.trim();
+  if (normalized.length === 0) {
+    throw new Error("--citekey requires a non-empty value");
+  }
+  return normalized;
+}
+
 function resolveDbPath(cwd: string, config: RhizomeConfig): string {
   return join(cwd, config.data.db_path);
 }
@@ -117,7 +125,8 @@ export async function runStatusCommand(
   database.init();
 
   try {
-    if (options.citekey) {
+    if (typeof options.citekey === "string") {
+      const normalizedCitekey = normalizeCitekeyOption(options.citekey);
       const row = database.db
         .query(
           `
@@ -127,10 +136,10 @@ export async function runStatusCommand(
           LIMIT 1;
           `,
         )
-        .get(options.citekey) as StudyRow | null;
+        .get(normalizedCitekey) as StudyRow | null;
 
       if (!row) {
-        throw new Error(`Study not found for citekey=${options.citekey}`);
+        throw new Error(`Study not found for citekey=${normalizedCitekey}`);
       }
 
       const study: StatusStudyDetail = {

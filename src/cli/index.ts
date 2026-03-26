@@ -42,7 +42,10 @@ export function createCliProgram(): Command {
   program
     .command("status")
     .description("Show queue and pipeline status")
-    .option("--citekey <key>", "Show status for a specific study")
+    .option(
+      "--citekey <key>",
+      "Show status for a specific study (compat selector; planned deprecation after first stable build in favor of rhizome_id/doi/pmid selectors)",
+    )
     .option("--json", "Emit machine-readable JSON")
     .action(async (options: StatusCommandOptions) => {
       await runStatusCommand(options);
@@ -53,7 +56,10 @@ export function createCliProgram(): Command {
     .description("Run pipeline processing")
     .option("--ai", "Run AI-required stages")
     .option("--batch <n>", "Maximum jobs to process", (value) => Number.parseInt(value, 10))
-    .option("--citekey <key>", "Process jobs for a specific study only")
+    .option(
+      "--citekey <key>",
+      "Process jobs for a specific study only (compat selector; planned deprecation after first stable build in favor of rhizome_id/doi/pmid selectors)",
+    )
     .action(async (options: ProcessCommandOptions) => {
       await runProcessCommand(options);
     });
