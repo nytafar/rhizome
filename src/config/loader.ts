@@ -1,5 +1,6 @@
 import matter from "gray-matter";
 import { CURRENT_CONFIG_VERSION, parseConfig, type RhizomeConfig } from "./schema";
+import { DEFAULT_CANONICAL_CONFIG_PATH, resolveWorkspaceConfigPath } from "./workspace-contract";
 
 const ENV_PREFIX = "env:";
 
@@ -173,9 +174,17 @@ export function parseAndValidateConfig(
 }
 
 export async function loadConfig(
-  configPath = ".siss/config.yaml",
+  configPath = DEFAULT_CANONICAL_CONFIG_PATH,
   env: EnvMap = process.env,
 ): Promise<RhizomeConfig> {
   const yaml = await Bun.file(configPath).text();
   return parseAndValidateConfig(yaml, env);
+}
+
+export async function loadWorkspaceConfig(
+  cwd = process.cwd(),
+  env: EnvMap = process.env,
+): Promise<RhizomeConfig> {
+  const configPath = await resolveWorkspaceConfigPath(cwd);
+  return loadConfig(configPath, env);
 }

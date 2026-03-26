@@ -4,6 +4,7 @@ export * from "./schema/frontmatter";
 export * from "./utils/citekey";
 export * from "./config/schema";
 export * from "./config/loader";
+export * from "./config/workspace-contract";
 export * from "./db/schema";
 export * from "./db/database";
 export * from "./queue/job-queue";

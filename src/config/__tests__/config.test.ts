@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import {
   DEFAULT_CONFIG_TEMPLATE,
   loadConfig,
+  loadWorkspaceConfig,
   parseAndValidateConfig,
 } from "../loader";
 
@@ -55,5 +56,33 @@ describe("config loader", () => {
         ZOTERO_API_KEY: "test-key",
       }),
     ).toThrow();
+  });
+
+  test("loadWorkspaceConfig falls back to legacy .rhizome config", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rhizome-config-"));
+    try {
+      const legacyDir = join(dir, ".rhizome");
+      await mkdir(legacyDir, { recursive: true });
+      await writeFile(join(legacyDir, "config.yaml"), DEFAULT_CONFIG_TEMPLATE);
+
+      const config = await loadWorkspaceConfig(dir, {
+        ZOTERO_API_KEY: "legacy-secret-key",
+      });
+
+      expect(config.config_version).toBe(1);
+      expect(config.zotero.api_key).toBe("legacy-secret-key");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test("loadWorkspaceConfig returns actionable guidance when no config exists", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rhizome-config-"));
+    try {
+      await expect(loadWorkspaceConfig(dir)).rejects.toThrow(/No workspace config found/);
+      await expect(loadWorkspaceConfig(dir)).rejects.toThrow(/rhizome init/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });
