@@ -11,6 +11,8 @@ const DEFAULT_AI_WINDOWS = ["17:00-19:00", "23:00-01:00", "04:00-06:00"];
 const DEFAULT_TIMEZONE = "Europe/Oslo";
 const DEFAULT_ZOTERO_KEY_ENV = "ZOTERO_API_KEY";
 const DEFAULT_UNPAYWALL_EMAIL = "your@email.com";
+const MARKER_BOOTSTRAP_TIMEOUT_MS = 120_000;
+const UV_INSTALL_HINT = "Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh";
 
 export interface InitCommandOptions {
   vault?: string;
@@ -45,11 +47,41 @@ export interface InitCommandResult {
 
 export type InitPrompt = (question: string, defaultValue?: string) => Promise<string>;
 
+export interface InitSubprocessResult {
+  exitCode: number;
+  stdout: string;
+  stderr: string;
+}
+
+export interface InitSubprocessRequest {
+  command: string;
+  args: string[];
+  cwd: string;
+  timeoutMs: number;
+}
+
+export type InitSubprocessRunner = (
+  request: InitSubprocessRequest,
+) => Promise<InitSubprocessResult>;
+
 export interface InitCommandDeps {
   cwd?: string;
   stdout?: Pick<typeof defaultStdout, "write">;
   stdin?: typeof defaultStdin;
   prompt?: InitPrompt;
+  runSubprocess?: InitSubprocessRunner;
+}
+
+class InitSubprocessTimeoutError extends Error {
+  commandDisplay: string;
+  timeoutMs: number;
+
+  constructor(commandDisplay: string, timeoutMs: number) {
+    super(`Command timed out after ${timeoutMs}ms: ${commandDisplay}`);
+    this.name = "InitSubprocessTimeoutError";
+    this.commandDisplay = commandDisplay;
+    this.timeoutMs = timeoutMs;
+  }
 }
 
 function normalizeCsv(input: string | undefined): string[] {
@@ -69,6 +101,182 @@ function resolveVaultPath(cwd: string, rawPath: string): string {
   }
 
   return join(cwd, rawPath);
+}
+
+function resolveParserPythonEnv(cwd: string, configuredPath: string): string {
+  if (configuredPath.includes("\0")) {
+    throw new Error(
+      "Invalid parser.marker.python_env path: contains null byte. Update parser.marker.python_env in config.",
+    );
+  }
+
+  if (isAbsolute(configuredPath)) {
+    return configuredPath;
+  }
+
+  return join(cwd, configuredPath);
+}
+
+function buildCommandDisplay(command: string, args: string[]): string {
+  return [command, ...args].join(" ");
+}
+
+function summarizeSubprocessFailure(stdout: string, stderr: string): string {
+  const preferred = stderr.trim().length > 0 ? stderr : stdout;
+  if (preferred.trim().length === 0) {
+    return "";
+  }
+
+  const firstLine = preferred
+    .trim()
+    .split(/\r?\n/)
+    .find((line) => line.trim().length > 0);
+
+  if (!firstLine) {
+    return "";
+  }
+
+  const normalized = firstLine.trim().replace(/\s+/g, " ");
+  if (normalized.length <= 240) {
+    return normalized;
+  }
+
+  return `${normalized.slice(0, 237)}...`;
+}
+
+async function defaultRunSubprocess(
+  request: InitSubprocessRequest,
+): Promise<InitSubprocessResult> {
+  const { command, args, cwd, timeoutMs } = request;
+  const commandDisplay = buildCommandDisplay(command, args);
+
+  let processRef: ReturnType<typeof Bun.spawn>;
+  try {
+    processRef = Bun.spawn([command, ...args], {
+      cwd,
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(reason);
+  }
+
+  const timeoutPromise = new Promise<never>((_, reject) => {
+    const timer = setTimeout(() => {
+      processRef.kill();
+      reject(new InitSubprocessTimeoutError(commandDisplay, timeoutMs));
+    }, timeoutMs);
+
+    processRef.exited.finally(() => {
+      clearTimeout(timer);
+    });
+  });
+
+  const exitCode = (await Promise.race([processRef.exited, timeoutPromise])) as number;
+  const stdout = await new Response(processRef.stdout).text();
+  const stderr = await new Response(processRef.stderr).text();
+
+  return {
+    exitCode,
+    stdout,
+    stderr,
+  };
+}
+
+async function runBootstrapStep(
+  deps: InitCommandDeps,
+  step: {
+    phase: string;
+    command: string;
+    args: string[];
+    cwd: string;
+    remediation: string;
+    timeoutHint: string;
+  },
+): Promise<void> {
+  const runner = deps.runSubprocess ?? defaultRunSubprocess;
+  const commandDisplay = buildCommandDisplay(step.command, step.args);
+
+  let result: InitSubprocessResult;
+  try {
+    result = await runner({
+      command: step.command,
+      args: step.args,
+      cwd: step.cwd,
+      timeoutMs: MARKER_BOOTSTRAP_TIMEOUT_MS,
+    });
+  } catch (error) {
+    if (error instanceof InitSubprocessTimeoutError) {
+      throw new Error(
+        `Marker bootstrap timed out during ${step.phase} (${commandDisplay}) after ${error.timeoutMs}ms. ${step.timeoutHint}`,
+      );
+    }
+
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(
+      `Marker bootstrap failed during ${step.phase} (${commandDisplay}). ${step.remediation} (${reason})`,
+    );
+  }
+
+  if (result.exitCode !== 0) {
+    const summary = summarizeSubprocessFailure(result.stdout, result.stderr);
+    const summarySuffix = summary.length > 0 ? `: ${summary}` : ".";
+    throw new Error(
+      `Marker bootstrap failed during ${step.phase} (${commandDisplay}) with exit code ${result.exitCode}${summarySuffix} ${step.remediation}`,
+    );
+  }
+}
+
+async function bootstrapMarkerRuntime(
+  deps: InitCommandDeps,
+  cwd: string,
+  config: { version: string; python_env: string },
+): Promise<void> {
+  const pythonEnvPath = resolveParserPythonEnv(cwd, config.python_env);
+  const markerBinary = join(pythonEnvPath, "bin", "marker_single");
+  const pinnedMarkerPackage = `marker-pdf==${config.version}`;
+
+  await runBootstrapStep(deps, {
+    phase: "uv availability check",
+    command: "uv",
+    args: ["--version"],
+    cwd,
+    remediation: UV_INSTALL_HINT,
+    timeoutHint: `${UV_INSTALL_HINT} and rerun 'rhizome init --force'.`,
+  });
+
+  await runBootstrapStep(deps, {
+    phase: "python environment creation",
+    command: "uv",
+    args: ["venv", pythonEnvPath, "--python", "3.11"],
+    cwd,
+    remediation: `Fix the uv venv command and rerun 'rhizome init --force'.`,
+    timeoutHint:
+      "Retry once package cache/network pressure clears, then rerun 'rhizome init --force'.",
+  });
+
+  await runBootstrapStep(deps, {
+    phase: "marker package install",
+    command: "uv",
+    args: ["pip", "install", "--python", pythonEnvPath, pinnedMarkerPackage],
+    cwd,
+    remediation:
+      "Fix package installation/network issues and rerun 'rhizome init --force'.",
+    timeoutHint:
+      "Retry once package cache/network pressure clears, then rerun 'rhizome init --force'.",
+  });
+
+  await runBootstrapStep(deps, {
+    phase: "marker healthcheck",
+    command: markerBinary,
+    args: ["--help"],
+    cwd,
+    remediation:
+      "Marker runtime is unhealthy. Re-run 'rhizome init --force' to reinstall the parser environment.",
+    timeoutHint:
+      "Healthcheck command hung. Re-run 'rhizome init --force' to rebuild the parser environment.",
+  });
 }
 
 function yamlString(value: string): string {
@@ -297,7 +505,7 @@ export async function runInitCommand(
   const input = await resolveInput(options, deps);
   const configYaml = renderConfigYaml(input);
 
-  parseAndValidateConfig(configYaml, {
+  const parsedConfig = parseAndValidateConfig(configYaml, {
     ...process.env,
     [input.zoteroKeyEnv]: process.env[input.zoteroKeyEnv] ?? "placeholder",
   });
@@ -332,6 +540,8 @@ export async function runInitCommand(
       system_folder: "_system",
     },
   });
+
+  await bootstrapMarkerRuntime(deps, cwd, parsedConfig.parser.marker);
 
   await Bun.write(configPath, configYaml);
 

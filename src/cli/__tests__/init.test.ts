@@ -4,30 +4,52 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseAndValidateConfig } from "../../config/loader";
 import { getVaultFolderStructurePaths } from "../../vault/folder-creator";
-import { runInitCommand } from "../commands/init";
+import {
+  runInitCommand,
+  type InitSubprocessRequest,
+  type InitSubprocessResult,
+} from "../commands/init";
+
+const SUCCESS_RESULT: InitSubprocessResult = {
+  exitCode: 0,
+  stdout: "ok\n",
+  stderr: "",
+};
+
+type RunnerStub = (request: InitSubprocessRequest) => Promise<InitSubprocessResult>;
+
+function makeInitArgs(vaultPath: string) {
+  return {
+    nonInteractive: true,
+    vault: vaultPath,
+    researchRoot: "Research",
+    zoteroUser: "12345",
+    zoteroKeyEnv: "ZOTERO_API_KEY",
+    unpaywallEmail: "test@example.com",
+    aiWindows: "17:00-19:00,23:00-01:00",
+    timezone: "Europe/Oslo",
+    zoteroCollections: "Adaptogens,Clinical Trials",
+  } as const;
+}
 
 describe("rhizome init", () => {
-  test("creates config, sqlite db, and folder structure in non-interactive mode", async () => {
+  test("creates config, sqlite db, folder structure, and bootstraps marker runtime in non-interactive mode", async () => {
     const root = await mkdtemp(join(tmpdir(), "rhizome-cli-init-"));
 
     try {
       const vaultPath = join(root, "vault");
       await mkdir(vaultPath, { recursive: true });
 
-      const result = await runInitCommand(
-        {
-          nonInteractive: true,
-          vault: vaultPath,
-          researchRoot: "Research",
-          zoteroUser: "12345",
-          zoteroKeyEnv: "ZOTERO_API_KEY",
-          unpaywallEmail: "test@example.com",
-          aiWindows: "17:00-19:00,23:00-01:00",
-          timezone: "Europe/Oslo",
-          zoteroCollections: "Adaptogens,Clinical Trials",
-        },
-        { cwd: root },
-      );
+      const calls: InitSubprocessRequest[] = [];
+      const runner: RunnerStub = async (request) => {
+        calls.push(request);
+        return SUCCESS_RESULT;
+      };
+
+      const result = await runInitCommand(makeInitArgs(vaultPath), {
+        cwd: root,
+        runSubprocess: runner,
+      });
 
       const configContent = await Bun.file(result.configPath).text();
       const parsed = parseAndValidateConfig(configContent, {
@@ -61,6 +83,24 @@ describe("rhizome init", () => {
           expect(dirInfo.isDirectory()).toBe(true);
         }),
       );
+
+      expect(calls).toHaveLength(4);
+      expect(calls[0]).toMatchObject({ command: "uv", args: ["--version"], cwd: root });
+      expect(calls[1]).toMatchObject({
+        command: "uv",
+        args: ["venv", join(root, ".siss-env"), "--python", "3.11"],
+        cwd: root,
+      });
+      expect(calls[2]).toMatchObject({
+        command: "uv",
+        args: ["pip", "install", "--python", join(root, ".siss-env"), "marker-pdf==1.6.0"],
+        cwd: root,
+      });
+      expect(calls[3]).toMatchObject({
+        command: join(root, ".siss-env", "bin", "marker_single"),
+        args: ["--help"],
+        cwd: root,
+      });
     } finally {
       await rm(root, { recursive: true, force: true });
     }
@@ -94,6 +134,7 @@ describe("rhizome init", () => {
             }
             return next;
           },
+          runSubprocess: async () => SUCCESS_RESULT,
         },
       );
 
@@ -105,6 +146,123 @@ describe("rhizome init", () => {
       expect(parsed.zotero.user_id).toBe("777");
       expect(parsed.pdf.unpaywall_email).toBe("prompt@example.com");
       expect(parsed.ai.windows).toEqual(["04:00-06:00", "17:00-19:00"]);
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails with actionable remediation when uv is unavailable", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rhizome-cli-init-uv-missing-"));
+
+    try {
+      const vaultPath = join(root, "vault");
+      await mkdir(vaultPath, { recursive: true });
+
+      await expect(
+        runInitCommand(makeInitArgs(vaultPath), {
+          cwd: root,
+          runSubprocess: async ({ command, args }) => {
+            if (command === "uv" && args[0] === "--version") {
+              return {
+                exitCode: 127,
+                stdout: "",
+                stderr: "uv: command not found",
+              };
+            }
+            return SUCCESS_RESULT;
+          },
+        }),
+      ).rejects.toThrow("Install uv: curl -LsSf https://astral.sh/uv/install.sh | sh");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails with install phase context when marker package install fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rhizome-cli-init-install-fail-"));
+
+    try {
+      const vaultPath = join(root, "vault");
+      await mkdir(vaultPath, { recursive: true });
+
+      await expect(
+        runInitCommand(makeInitArgs(vaultPath), {
+          cwd: root,
+          runSubprocess: async ({ command, args }) => {
+            if (command === "uv" && args[0] === "pip") {
+              return {
+                exitCode: 1,
+                stdout: "",
+                stderr: "network timeout while downloading marker",
+              };
+            }
+            return SUCCESS_RESULT;
+          },
+        }),
+      ).rejects.toThrow("marker package install");
+
+      await expect(
+        runInitCommand(makeInitArgs(vaultPath), {
+          cwd: root,
+          runSubprocess: async ({ command, args }) => {
+            if (command === "uv" && args[0] === "pip") {
+              return {
+                exitCode: 1,
+                stdout: "",
+                stderr: "network timeout while downloading marker",
+              };
+            }
+            return SUCCESS_RESULT;
+          },
+        }),
+      ).rejects.toThrow("Fix package installation/network issues and rerun 'rhizome init --force'.");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails with healthcheck remediation when marker binary healthcheck fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rhizome-cli-init-healthcheck-fail-"));
+
+    try {
+      const vaultPath = join(root, "vault");
+      await mkdir(vaultPath, { recursive: true });
+
+      await expect(
+        runInitCommand(makeInitArgs(vaultPath), {
+          cwd: root,
+          runSubprocess: async ({ command, args }) => {
+            if (command.endsWith("marker_single") && args[0] === "--help") {
+              return {
+                exitCode: 2,
+                stdout: "",
+                stderr: "Traceback: missing model assets",
+              };
+            }
+            return SUCCESS_RESULT;
+          },
+        }),
+      ).rejects.toThrow("Marker runtime is unhealthy. Re-run 'rhizome init --force' to reinstall the parser environment.");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails in non-interactive mode when required options are missing", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rhizome-cli-init-missing-required-"));
+
+    try {
+      await expect(
+        runInitCommand(
+          {
+            nonInteractive: true,
+          },
+          {
+            cwd: root,
+            runSubprocess: async () => SUCCESS_RESULT,
+          },
+        ),
+      ).rejects.toThrow("Missing required option for non-interactive mode: Vault path");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

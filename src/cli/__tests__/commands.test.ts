@@ -41,7 +41,14 @@ async function withTempRhizome<T>(run: (root: string, vaultPath: string) => Prom
         ...INIT_ARGS,
         vault: vaultPath,
       },
-      { cwd: root },
+      {
+        cwd: root,
+        runSubprocess: async () => ({
+          exitCode: 0,
+          stdout: "ok\n",
+          stderr: "",
+        }),
+      },
     );
 
     return await run(root, vaultPath);
