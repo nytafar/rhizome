@@ -59,6 +59,7 @@ interface StudyStateRow {
 const DEFAULT_STAGE_SEQUENCE: PipelineStep[] = [
   PipelineStep.INGEST,
   PipelineStep.ZOTERO_SYNC,
+  PipelineStep.PDF_FETCH,
   PipelineStep.SUMMARIZE,
   PipelineStep.VAULT_WRITE,
 ];
@@ -71,6 +72,7 @@ const DEFAULT_AI_STAGES = new Set<PipelineStep>([
 const REQUIRED_PHASE1_STEPS: PipelineStep[] = [
   PipelineStep.INGEST,
   PipelineStep.ZOTERO_SYNC,
+  PipelineStep.PDF_FETCH,
   PipelineStep.SUMMARIZE,
   PipelineStep.VAULT_WRITE,
 ];
@@ -307,6 +309,9 @@ export class PipelineOrchestrator {
     }
 
     const nextStage = this.stageSequence[currentIndex + 1];
+    if (!nextStage) {
+      return 0;
+    }
 
     const existing = this.queue
       .query({ sissId: job.sissId, stage: nextStage })

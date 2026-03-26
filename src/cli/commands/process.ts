@@ -14,6 +14,7 @@ import {
   type PipelineStepState,
 } from "../../types/pipeline";
 import { runSummarizeStage } from "../../stages/summarize";
+import { runPdfFetchStage } from "../../stages/pdf-fetch";
 import { runVaultWriteStage } from "../../stages/vault-write";
 import type { StudyRecord } from "../../types/study";
 import type { Database as BunSQLiteDatabase } from "bun:sqlite";
@@ -172,6 +173,61 @@ function extractSummaryPathFromJobMetadata(
   }
 }
 
+function extractPdfFetchMetadataFromJobMetadata(
+  db: BunSQLiteDatabase,
+  sissId: string,
+  vaultPath: string,
+): { pdfAvailable: boolean; pdfSource?: StudyRecord["pdf_source"]; pdfPath?: string } {
+  const row = db
+    .query(
+      `
+      SELECT metadata
+      FROM jobs
+      WHERE siss_id = ?
+        AND stage = ?
+        AND status = 'complete'
+        AND metadata IS NOT NULL
+      ORDER BY id DESC
+      LIMIT 1;
+      `,
+    )
+    .get(sissId, PipelineStep.PDF_FETCH) as { metadata: string } | null;
+
+  if (!row?.metadata) {
+    return { pdfAvailable: false };
+  }
+
+  try {
+    const parsed = JSON.parse(row.metadata) as {
+      pdfAvailable?: unknown;
+      pdfSource?: unknown;
+      pdfPath?: unknown;
+    };
+
+    const pdfAvailable = parsed.pdfAvailable === true;
+    const pdfSource =
+      parsed.pdfSource === "zotero" ||
+      parsed.pdfSource === "europepmc" ||
+      parsed.pdfSource === "unpaywall" ||
+      parsed.pdfSource === "openalex" ||
+      parsed.pdfSource === "manual"
+        ? parsed.pdfSource
+        : undefined;
+
+    let pdfPath: string | undefined;
+    if (typeof parsed.pdfPath === "string" && parsed.pdfPath.trim().length > 0) {
+      const relativePath = relative(vaultPath, parsed.pdfPath);
+      if (!relativePath.startsWith("..") && relativePath.length > 0) {
+        pdfPath = relativePath.replaceAll("\\", "/");
+      }
+    }
+
+    return { pdfAvailable, pdfSource, pdfPath };
+  } catch {
+    return { pdfAvailable: false };
+  }
+}
+
 function normalizePipelineOverall(value: string): PipelineOverallStatus {
   if (Object.values(PipelineOverallStatus).includes(value as PipelineOverallStatus)) {
     return value as PipelineOverallStatus;
@@ -213,6 +269,11 @@ function loadStudyForVaultWrite(params: {
   const pipelineSteps = parsePipelineSteps(row.pipeline_steps_json);
   const zoteroSyncStep = pipelineSteps[PipelineStep.ZOTERO_SYNC] as Record<string, unknown> | undefined;
   const summaryPath = extractSummaryPathFromJobMetadata(params.db, row.siss_id, params.config.vault.path);
+  const pdfMetadata = extractPdfFetchMetadataFromJobMetadata(
+    params.db,
+    row.siss_id,
+    params.config.vault.path,
+  );
 
   return {
     siss_id: row.siss_id,
@@ -241,7 +302,9 @@ function loadStudyForVaultWrite(params: {
     source: row.source,
     source_collections: parseStringArray(zoteroSyncStep?.source_collections),
     summary_path: summaryPath,
-    pdf_available: false,
+    pdf_available: pdfMetadata.pdfAvailable,
+    pdf_source: pdfMetadata.pdfSource,
+    pdf_path: pdfMetadata.pdfPath,
     last_pipeline_run: params.now().toISOString().slice(0, 10),
   };
 }
@@ -287,6 +350,20 @@ function registerBuiltInStageHandlers(
         stage: PipelineStep.ZOTERO_SYNC,
         action: "noop",
       },
+    };
+  });
+
+  orchestrator.registerStageHandler(PipelineStep.PDF_FETCH, async ({ job }) => {
+    const result = await runPdfFetchStage({
+      db: params.db,
+      sissId: job.sissId,
+      assetsRootDir: resolveAssetsRootDir(params.config),
+      sourceOrder: params.config.pdf.sources,
+      maxFileSizeMb: params.config.pdf.max_file_size_mb,
+    });
+
+    return {
+      metadata: result.metadata,
     };
   });
 

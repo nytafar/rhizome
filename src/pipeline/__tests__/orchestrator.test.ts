@@ -89,6 +89,9 @@ describe("PipelineOrchestrator", () => {
       orchestrator.registerStageHandler(PipelineStep.ZOTERO_SYNC, async ({ job }) => {
         callOrder.push(job.stage);
       });
+      orchestrator.registerStageHandler(PipelineStep.PDF_FETCH, async ({ job }) => {
+        callOrder.push(job.stage);
+      });
       orchestrator.registerStageHandler(PipelineStep.SUMMARIZE, async ({ job }) => {
         callOrder.push(job.stage);
       });
@@ -98,20 +101,29 @@ describe("PipelineOrchestrator", () => {
 
       const nonAiResult = await orchestrator.processNonAI();
       expect(nonAiResult).toEqual({
-        processed: 2,
-        succeeded: 2,
+        processed: 3,
+        succeeded: 3,
         failed: 0,
-        enqueued: 2,
+        enqueued: 3,
       });
 
       const stateAfterNonAI = readPipelineState(database, "SISS-001");
       expect(stateAfterNonAI.overall).toBe(PipelineOverallStatus.IN_PROGRESS);
       expect(stateAfterNonAI.steps[PipelineStep.INGEST]?.status).toBe(PipelineStepStatus.COMPLETE);
       expect(stateAfterNonAI.steps[PipelineStep.ZOTERO_SYNC]?.status).toBe(PipelineStepStatus.COMPLETE);
+      expect(stateAfterNonAI.steps[PipelineStep.PDF_FETCH]?.status).toBe(PipelineStepStatus.COMPLETE);
       expect(stateAfterNonAI.steps[PipelineStep.SUMMARIZE]?.status).toBe(PipelineStepStatus.QUEUED);
 
       const queuedAfterNonAI = queue.query({ sissId: "SISS-001", status: "queued" });
       expect(queuedAfterNonAI.map((job) => job.stage)).toEqual([PipelineStep.SUMMARIZE]);
+
+      const nonAiRetry = await orchestrator.processNonAI();
+      expect(nonAiRetry).toEqual({
+        processed: 0,
+        succeeded: 0,
+        failed: 0,
+        enqueued: 0,
+      });
 
       const aiResult = await orchestrator.processAI();
       expect(aiResult).toEqual({
@@ -138,6 +150,7 @@ describe("PipelineOrchestrator", () => {
       expect(callOrder).toEqual([
         PipelineStep.INGEST,
         PipelineStep.ZOTERO_SYNC,
+        PipelineStep.PDF_FETCH,
         PipelineStep.SUMMARIZE,
         PipelineStep.VAULT_WRITE,
       ]);
@@ -188,6 +201,11 @@ describe("PipelineOrchestrator", () => {
         [PipelineStep.SUMMARIZE]: {
           status: PipelineStepStatus.COMPLETE,
           updated_at: "2026-03-25T00:02:00.000Z",
+          retries: 0,
+        },
+        [PipelineStep.PDF_FETCH]: {
+          status: PipelineStepStatus.COMPLETE,
+          updated_at: "2026-03-25T00:02:30.000Z",
           retries: 0,
         },
         [PipelineStep.VAULT_WRITE]: {

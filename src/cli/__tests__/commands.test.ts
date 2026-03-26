@@ -1,9 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import matter from "gray-matter";
+import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "../../db/database";
 import { WriterLock } from "../../lock/writer-lock";
+import { parseStudyFrontmatter } from "../../schema/frontmatter";
+import { PipelineOverallStatus, PipelineStep, PipelineStepStatus } from "../../types/pipeline";
 import { runInitCommand } from "../commands/init";
 import { runSyncZoteroCommand } from "../commands/sync";
 import { runProcessCommand } from "../commands/process";
@@ -189,6 +192,162 @@ describe("CLI command handlers", () => {
       expect(result.mode).toBe("ai");
       expect(result.result.processed).toBe(0);
       expect(result.result.failed).toBe(0);
+    });
+  });
+
+  test("process non-AI continues to summarize queue when pdf_fetch finds no PDF", async () => {
+    await withTempRhizome(async (root) => {
+      const item: ZoteroItem = {
+        key: "ITEM_NOPDF_001",
+        version: 5,
+        data: {
+          itemType: "journalArticle",
+          title: "No PDF continuation",
+          creators: [{ creatorType: "author", firstName: "Nora", lastName: "Lane" }],
+          date: "2024",
+          DOI: "10.1000/example.nopdf",
+          collections: ["COLL_A"],
+        },
+      };
+
+      await runSyncZoteroCommand(
+        { full: true, collection: ["Adaptogens"] },
+        {
+          cwd: root,
+          createClient: () => makeFakeClient([item]),
+        },
+      );
+
+      const result = await runProcessCommand({ ai: false }, { cwd: root });
+      expect(result.mode).toBe("non_ai");
+      expect(result.result.failed).toBe(0);
+
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      const summarizeQueued = database.db
+        .query(
+          `
+          SELECT COUNT(*) AS count
+          FROM jobs
+          WHERE stage = ? AND status = 'queued';
+          `,
+        )
+        .get(PipelineStep.SUMMARIZE) as { count: number };
+
+      const pdfFetchMetadataRow = database.db
+        .query(
+          `
+          SELECT metadata
+          FROM jobs
+          WHERE stage = ? AND status = 'complete'
+          ORDER BY id DESC
+          LIMIT 1;
+          `,
+        )
+        .get(PipelineStep.PDF_FETCH) as { metadata: string } | null;
+
+      database.close();
+
+      expect(summarizeQueued.count).toBe(1);
+      expect(pdfFetchMetadataRow).toBeDefined();
+      const pdfFetchMetadata = JSON.parse(pdfFetchMetadataRow?.metadata ?? "{}") as {
+        pdfAvailable?: boolean;
+      };
+      expect(pdfFetchMetadata.pdfAvailable).toBe(false);
+    });
+  });
+
+  test("process vault_write uses pdf_fetch metadata for downstream note frontmatter", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      const sissId = "550e8400-e29b-41d4-a716-446655440020";
+      const citekey = "lane2026pdfmeta";
+      const pipelineSteps = {
+        [PipelineStep.INGEST]: {
+          status: PipelineStepStatus.COMPLETE,
+          updated_at: "2026-03-26T10:00:00.000Z",
+          retries: 0,
+        },
+        [PipelineStep.ZOTERO_SYNC]: {
+          status: PipelineStepStatus.COMPLETE,
+          updated_at: "2026-03-26T10:01:00.000Z",
+          retries: 0,
+        },
+        [PipelineStep.PDF_FETCH]: {
+          status: PipelineStepStatus.COMPLETE,
+          updated_at: "2026-03-26T10:02:00.000Z",
+          retries: 0,
+        },
+      };
+
+      database.db
+        .query(
+          `
+          INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json, doi)
+          VALUES (?, ?, ?, ?, ?, ?, ?);
+          `,
+        )
+        .run(
+          sissId,
+          citekey,
+          "zotero",
+          "PDF metadata propagation",
+          PipelineOverallStatus.IN_PROGRESS,
+          JSON.stringify(pipelineSteps),
+          "10.1000/example.meta",
+        );
+
+      const pdfRelativePath = "Research/studies/_assets/lane2026pdfmeta/paper.pdf";
+      const pdfAbsolutePath = join(vaultPath, pdfRelativePath);
+      await mkdir(join(vaultPath, "Research", "studies", "_assets", citekey), { recursive: true });
+      await Bun.write(pdfAbsolutePath, "%PDF-1.1\nmeta\n");
+
+      const summaryAbsolutePath = join(vaultPath, "Research", "studies", "_assets", citekey, "summary.current.md");
+      await Bun.write(summaryAbsolutePath, "# Summary\n");
+
+      database.db
+        .query(
+          `
+          INSERT INTO jobs (siss_id, stage, status, metadata)
+          VALUES (?, ?, 'complete', ?), (?, ?, 'complete', ?), (?, ?, 'queued', NULL);
+          `,
+        )
+        .run(
+          sissId,
+          PipelineStep.PDF_FETCH,
+          JSON.stringify({
+            stage: PipelineStep.PDF_FETCH,
+            pdfAvailable: true,
+            pdfSource: "unpaywall",
+            pdfPath: pdfAbsolutePath,
+            attempts: [{ source: "unpaywall", outcome: "success" }],
+          }),
+          sissId,
+          PipelineStep.SUMMARIZE,
+          JSON.stringify({ summaryPath: summaryAbsolutePath, source: "abstract_only" }),
+          sissId,
+          PipelineStep.VAULT_WRITE,
+        );
+
+      database.close();
+
+      const result = await runProcessCommand({ ai: false }, { cwd: root });
+      expect(result.mode).toBe("non_ai");
+      expect(result.result.failed).toBe(0);
+
+      const notePath = join(vaultPath, "Research", "studies", `${citekey}.md`);
+      const parsed = matter(await readFile(notePath, "utf8"));
+      const frontmatter = parseStudyFrontmatter(parsed.data);
+
+      expect(frontmatter.pdf_available).toBe(true);
+      expect(frontmatter.pdf_source).toBe("unpaywall");
+      expect(frontmatter.pdf_path).toBe(pdfRelativePath);
+      expect(frontmatter.summary_path).toBe(
+        "Research/studies/_assets/lane2026pdfmeta/summary.current.md",
+      );
     });
   });
 
