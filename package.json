@@ -6,7 +6,8 @@
   "scripts": {
     "build": "bun build --no-bundle src/index.ts",
     "test": "bun test",
-    "test:": "bun run scripts/test-colon.ts"
+    "test:": "bun run scripts/test-colon.ts",
+    "e2e:evidence": "bun run scripts/e2e/intelligence-loop-evidence.ts"
   },
   "devDependencies": {
     "@types/bun": "latest"
