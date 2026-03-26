@@ -105,6 +105,7 @@ describe("runVaultWriteStage", () => {
     expect(result.metadata.stage).toBe(PipelineStep.VAULT_WRITE);
     expect(result.metadata.frontmatterValid).toBe(true);
     expect(result.metadata.preservedKeys).toEqual([]);
+    expect(result.metadata.malformedFrontmatter).toBe(false);
 
     const parsedMatter = matter(await readFile(result.notePath, "utf8"));
     const frontmatter = parseStudyFrontmatter(parsedMatter.data);
@@ -150,12 +151,14 @@ describe("runVaultWriteStage", () => {
       asset_dir: string;
       frontmatter_valid: boolean;
       preserved_keys: string[];
+      malformed_frontmatter: boolean;
     };
 
     expect(metadata.note_path).toBe("Research/studies/smith2023ashwagandha.md");
     expect(metadata.asset_dir).toBe("Research/studies/_assets/smith2023ashwagandha/");
     expect(metadata.frontmatter_valid).toBe(true);
     expect(metadata.preserved_keys).toEqual([]);
+    expect(metadata.malformed_frontmatter).toBe(false);
 
     database.close();
   });
@@ -275,6 +278,7 @@ describe("runVaultWriteStage", () => {
     expect(frontmatter.user_status).toBe("reading");
     expect(frontmatter.notes).toBe("keep me");
     expect(result.metadata.preservedKeys.sort()).toEqual(["notes", "tags", "user_rating", "user_status"]);
+    expect(result.metadata.malformedFrontmatter).toBe(false);
 
     const stageLog = database.db
       .query(
@@ -288,8 +292,87 @@ describe("runVaultWriteStage", () => {
       )
       .get(study.rhizome_id) as { metadata: string };
 
-    const metadata = JSON.parse(stageLog.metadata) as { preserved_keys: string[] };
+    const metadata = JSON.parse(stageLog.metadata) as {
+      preserved_keys: string[];
+      malformed_frontmatter: boolean;
+    };
     expect(metadata.preserved_keys.sort()).toEqual(["notes", "tags", "user_rating", "user_status"]);
+    expect(metadata.malformed_frontmatter).toBe(false);
+
+    database.close();
+  });
+
+  test("falls back to fresh write and warning metadata when existing frontmatter is malformed", async () => {
+    const root = await makeTempDir("rhizome-vault-write-");
+    const dbPath = join(root, "rhizome.sqlite");
+
+    const database = new Database({ path: dbPath });
+    database.init();
+
+    const study = buildStudyFixture();
+
+    database.db
+      .query(
+        `
+        INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+        VALUES (?, ?, ?, ?, ?, ?);
+        `,
+      )
+      .run(
+        study.rhizome_id,
+        study.citekey,
+        study.source,
+        study.title,
+        study.pipeline_overall,
+        JSON.stringify(study.pipeline_steps),
+      );
+
+    const notePath = join(root, "Research", "studies", "smith2023ashwagandha.md");
+    await Bun.write(
+      notePath,
+      [
+        "---",
+        "note_type: study",
+        "tags:",
+        "  - broken",
+        "# missing closing frontmatter fence on purpose",
+      ].join("\n"),
+    );
+
+    const result = await runVaultWriteStage({
+      db: database.db,
+      study,
+      vaultPath: root,
+      vault: VAULT_CONFIG,
+      now: () => new Date("2026-03-25T22:57:00.000Z"),
+    });
+
+    expect(result.metadata.malformedFrontmatter).toBe(true);
+    expect(result.metadata.preservedKeys).toEqual([]);
+
+    const parsedMatter = matter(await readFile(result.notePath, "utf8"));
+    const frontmatter = parseStudyFrontmatter(parsedMatter.data);
+    expect(frontmatter.note_type).toBe("study");
+
+    const stageLog = database.db
+      .query(
+        `
+        SELECT metadata
+        FROM job_stage_log
+        WHERE rhizome_id = ?
+        ORDER BY id DESC
+        LIMIT 1;
+        `,
+      )
+      .get(study.rhizome_id) as { metadata: string };
+
+    const metadata = JSON.parse(stageLog.metadata) as {
+      malformed_frontmatter: boolean;
+      preserved_keys: string[];
+    };
+
+    expect(metadata.malformed_frontmatter).toBe(true);
+    expect(metadata.preserved_keys).toEqual([]);
 
     database.close();
   });

@@ -42,6 +42,7 @@ export interface VaultWriteStageResult {
     durationMs: number;
     frontmatterValid: true;
     preservedKeys: UserPreservedFrontmatterKey[];
+    malformedFrontmatter: boolean;
   };
 }
 
@@ -88,16 +89,26 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 async function readExistingFrontmatterForMerge(notePath: string): Promise<{
   frontmatter?: Partial<StudyFrontmatterProjection>;
   preservedKeys: UserPreservedFrontmatterKey[];
+  malformedFrontmatter: boolean;
 }> {
   const noteFile = Bun.file(notePath);
   if (!(await noteFile.exists())) {
-    return { preservedKeys: [] };
+    return { preservedKeys: [], malformedFrontmatter: false };
   }
 
   const raw = await noteFile.text();
+
+  if (raw.trim().startsWith("---")) {
+    const split = raw.split("\n");
+    const secondFenceIndex = split.findIndex((line, index) => index > 0 && line.trim() === "---");
+    if (secondFenceIndex === -1) {
+      return { preservedKeys: [], malformedFrontmatter: true };
+    }
+  }
+
   const parsed = matter(raw);
   if (!isRecord(parsed.data)) {
-    return { preservedKeys: [] };
+    return { preservedKeys: [], malformedFrontmatter: false };
   }
 
   const preservedKeys: UserPreservedFrontmatterKey[] = [];
@@ -113,6 +124,7 @@ async function readExistingFrontmatterForMerge(notePath: string): Promise<{
   return {
     frontmatter: preservedKeys.length > 0 ? preservedFrontmatter : undefined,
     preservedKeys,
+    malformedFrontmatter: false,
   };
 }
 
@@ -191,6 +203,7 @@ export async function runVaultWriteStage(
     ? {
         frontmatter: input.existingFrontmatter,
         preservedKeys: USER_PRESERVED_FRONTMATTER_KEYS.filter((key) => key in input.existingFrontmatter),
+        malformedFrontmatter: false,
       }
     : await readExistingFrontmatterForMerge(notePath);
 
@@ -222,6 +235,7 @@ export async function runVaultWriteStage(
       asset_dir: `${assetDirRelative}/`,
       frontmatter_valid: true,
       preserved_keys: existingMerge.preservedKeys,
+      malformed_frontmatter: existingMerge.malformedFrontmatter,
     },
   });
 
@@ -237,6 +251,7 @@ export async function runVaultWriteStage(
       durationMs,
       frontmatterValid: true,
       preservedKeys: existingMerge.preservedKeys,
+      malformedFrontmatter: existingMerge.malformedFrontmatter,
     },
   };
 }
