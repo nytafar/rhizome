@@ -19,5 +19,7 @@ export {
   type VaultWriteStageResult,
   type VaultWriteStageHandler,
 } from "./stages/vault-write";
+export * from "./parser/types";
+export * from "./parser/registry";
 export * from "./zotero/sync";
 export * from "./vault/note-builder";

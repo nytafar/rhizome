@@ -17,6 +17,13 @@ export enum PipelineStep {
   BASES_SYNC = "bases_sync",
 }
 
+export const FULLTEXT_PIPELINE_STEPS = [
+  PipelineStep.FULLTEXT_MARKER,
+  PipelineStep.FULLTEXT_DOCLING,
+] as const;
+
+export type FulltextPipelineStep = (typeof FULLTEXT_PIPELINE_STEPS)[number];
+
 export enum PipelineStepStatus {
   PENDING = "pending",
   QUEUED = "queued",
