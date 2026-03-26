@@ -71,9 +71,13 @@ function withVaultWriteStep(study: StudyRecord, updatedAt: string): StudyRecord 
   };
 }
 
+function resolveStudyIdentity(study: StudyRecord): string {
+  return (study as StudyRecord & { rhizome_id?: string }).rhizome_id ?? study.siss_id;
+}
+
 function upsertPipelineStepInDb(params: {
   db: BunSQLiteDatabase;
-  sissId: string;
+  rhizomeId: string;
   pipelineSteps: StudyRecord["pipeline_steps"];
   updatedAt: string;
 }): void {
@@ -82,15 +86,15 @@ function upsertPipelineStepInDb(params: {
       `
       UPDATE studies
       SET pipeline_steps_json = ?, updated_at = ?
-      WHERE siss_id = ?;
+      WHERE rhizome_id = ?;
       `,
     )
-    .run(JSON.stringify(params.pipelineSteps), params.updatedAt, params.sissId);
+    .run(JSON.stringify(params.pipelineSteps), params.updatedAt, params.rhizomeId);
 }
 
 function insertJobStageLog(params: {
   db: BunSQLiteDatabase;
-  sissId: string;
+  rhizomeId: string;
   startedAt: string;
   completedAt: string;
   durationMs: number;
@@ -99,12 +103,12 @@ function insertJobStageLog(params: {
   params.db
     .query(
       `
-      INSERT INTO job_stage_log (siss_id, stage, status, started_at, completed_at, duration_ms, metadata)
+      INSERT INTO job_stage_log (rhizome_id, stage, status, started_at, completed_at, duration_ms, metadata)
       VALUES (?, ?, 'completed', ?, ?, ?, ?);
       `,
     )
     .run(
-      params.sissId,
+      params.rhizomeId,
       PipelineStep.VAULT_WRITE,
       params.startedAt,
       params.completedAt,
@@ -154,14 +158,14 @@ export async function runVaultWriteStage(
 
   upsertPipelineStepInDb({
     db: input.db,
-    sissId: input.study.siss_id,
+    rhizomeId: input.study.rhizome_id,
     pipelineSteps: studyWithAssetDir.pipeline_steps,
     updatedAt: completedAt,
   });
 
   insertJobStageLog({
     db: input.db,
-    sissId: input.study.siss_id,
+    rhizomeId: input.study.rhizome_id,
     startedAt,
     completedAt,
     durationMs,

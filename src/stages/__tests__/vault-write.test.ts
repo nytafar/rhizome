@@ -28,6 +28,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 function buildStudyFixture(): StudyRecord {
   return {
     siss_id: "550e8400-e29b-41d4-a716-446655440000",
+    rhizome_id: "550e8400-e29b-41d4-a716-446655440000",
     citekey: "smith2023ashwagandha",
     title: "Ashwagandha root extract reduces cortisol in chronically stressed adults",
     authors: [
@@ -76,12 +77,12 @@ describe("runVaultWriteStage", () => {
     database.db
       .query(
         `
-        INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+        INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
         VALUES (?, ?, ?, ?, ?, ?);
         `,
       )
       .run(
-        study.siss_id,
+        study.rhizome_id,
         study.citekey,
         study.source,
         study.title,
@@ -107,20 +108,20 @@ describe("runVaultWriteStage", () => {
     const parsedMatter = matter(await readFile(result.notePath, "utf8"));
     const frontmatter = parseStudyFrontmatter(parsedMatter.data);
 
-    expect(frontmatter.citekey).toBe("smith2023ashwagandha");
-    expect(frontmatter.pipeline_steps[PipelineStep.VAULT_WRITE]?.status).toBe(
-      PipelineStepStatus.COMPLETE,
-    );
-    expect(frontmatter.asset_dir).toBe("Research/studies/_assets/smith2023ashwagandha/");
+    expect(frontmatter.note_type).toBe("study");
+    expect(frontmatter.rhizome_id).toBe(study.rhizome_id);
+    expect(frontmatter.pipeline_status).toBe("partial");
+    expect(frontmatter.has_summary).toBe(false);
+    expect(frontmatter.pdf_available).toBe(false);
 
     const assetDirStat = await stat(result.assetDirPath);
     expect(assetDirStat.isDirectory()).toBe(true);
 
     const dbStudyRow = database.db
       .query(
-        "SELECT pipeline_steps_json FROM studies WHERE siss_id = ? LIMIT 1;",
+        "SELECT pipeline_steps_json FROM studies WHERE rhizome_id = ? LIMIT 1;",
       )
-      .get(study.siss_id) as { pipeline_steps_json: string };
+      .get(study.rhizome_id) as { pipeline_steps_json: string };
 
     const pipelineSteps = JSON.parse(dbStudyRow.pipeline_steps_json) as Record<
       string,
@@ -133,12 +134,12 @@ describe("runVaultWriteStage", () => {
         `
         SELECT stage, status, metadata
         FROM job_stage_log
-        WHERE siss_id = ?
+        WHERE rhizome_id = ?
         ORDER BY id DESC
         LIMIT 1;
         `,
       )
-      .get(study.siss_id) as { stage: string; status: string; metadata: string };
+      .get(study.rhizome_id) as { stage: string; status: string; metadata: string };
 
     expect(stageLog.stage).toBe(PipelineStep.VAULT_WRITE);
     expect(stageLog.status).toBe("completed");
@@ -168,12 +169,12 @@ describe("runVaultWriteStage", () => {
     database.db
       .query(
         `
-        INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+        INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
         VALUES (?, ?, ?, ?, ?, ?);
         `,
       )
       .run(
-        study.siss_id,
+        study.rhizome_id,
         study.citekey,
         study.source,
         study.title,

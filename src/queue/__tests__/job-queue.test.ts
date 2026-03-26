@@ -19,15 +19,15 @@ async function withDatabase<T>(run: (database: Database) => T | Promise<T>): Pro
   }
 }
 
-function insertStudy(database: Database, sissId: string, citekey: string): void {
+function insertStudy(database: Database, rhizomeId: string, citekey: string): void {
   database.db
     .query(
       `
-      INSERT INTO studies (siss_id, citekey, source, title)
+      INSERT INTO studies (rhizome_id, citekey, source, title)
       VALUES (?, ?, ?, ?);
       `,
     )
-    .run(sissId, citekey, "manual", `Study ${sissId}`);
+    .run(rhizomeId, citekey, "manual", `Study ${rhizomeId}`);
 }
 
 describe("JobQueue", () => {
@@ -38,20 +38,20 @@ describe("JobQueue", () => {
       insertStudy(database, "SISS-003", "charlie2024study");
 
       const queue = new JobQueue(database.db);
-      queue.enqueue({ sissId: "SISS-001", stage: PipelineStep.INGEST, priority: 0 });
-      queue.enqueue({ sissId: "SISS-002", stage: PipelineStep.INGEST, priority: 10 });
-      queue.enqueue({ sissId: "SISS-003", stage: PipelineStep.INGEST, priority: 10 });
+      queue.enqueue({ rhizomeId: "SISS-001", stage: PipelineStep.INGEST, priority: 0 });
+      queue.enqueue({ rhizomeId: "SISS-002", stage: PipelineStep.INGEST, priority: 10 });
+      queue.enqueue({ rhizomeId: "SISS-003", stage: PipelineStep.INGEST, priority: 10 });
 
       const first = queue.dequeue();
-      expect(first?.sissId).toBe("SISS-002");
+      expect(first?.rhizomeId).toBe("SISS-002");
       queue.updateStatus({ jobId: first!.id, status: "processing" });
 
       const second = queue.dequeue();
-      expect(second?.sissId).toBe("SISS-003");
+      expect(second?.rhizomeId).toBe("SISS-003");
       queue.updateStatus({ jobId: second!.id, status: "processing" });
 
       const third = queue.dequeue();
-      expect(third?.sissId).toBe("SISS-001");
+      expect(third?.rhizomeId).toBe("SISS-001");
     });
   });
 
@@ -61,7 +61,7 @@ describe("JobQueue", () => {
       const queue = new JobQueue(database.db);
 
       const jobId = queue.enqueue({
-        sissId: "SISS-010",
+        rhizomeId: "SISS-010",
         stage: PipelineStep.SUMMARIZE,
         priority: 5,
         aiWindowRequired: true,
@@ -89,7 +89,7 @@ describe("JobQueue", () => {
         completedAt: "2026-03-25T19:01:00Z",
       });
 
-      const [updated] = queue.query({ sissId: "SISS-010", stage: PipelineStep.SUMMARIZE });
+      const [updated] = queue.query({ rhizomeId: "SISS-010", stage: PipelineStep.SUMMARIZE });
 
       expect(updated).toBeDefined();
       if (!updated) {
@@ -106,17 +106,17 @@ describe("JobQueue", () => {
     });
   });
 
-  test("query filters by siss_id, stage, and status", async () => {
+  test("query filters by rhizome_id, stage, and status", async () => {
     await withDatabase((database) => {
       insertStudy(database, "SISS-100", "echo2024study");
       insertStudy(database, "SISS-101", "foxtrot2024study");
 
       const queue = new JobQueue(database.db);
-      queue.enqueue({ sissId: "SISS-100", stage: PipelineStep.PDF_FETCH, status: "queued", priority: 0 });
-      queue.enqueue({ sissId: "SISS-100", stage: PipelineStep.SUMMARIZE, status: "processing", priority: 0 });
-      queue.enqueue({ sissId: "SISS-101", stage: PipelineStep.SUMMARIZE, status: "queued", priority: 0 });
+      queue.enqueue({ rhizomeId: "SISS-100", stage: PipelineStep.PDF_FETCH, status: "queued", priority: 0 });
+      queue.enqueue({ rhizomeId: "SISS-100", stage: PipelineStep.SUMMARIZE, status: "processing", priority: 0 });
+      queue.enqueue({ rhizomeId: "SISS-101", stage: PipelineStep.SUMMARIZE, status: "queued", priority: 0 });
 
-      const byStudy = queue.query({ sissId: "SISS-100" });
+      const byStudy = queue.query({ rhizomeId: "SISS-100" });
       expect(byStudy).toHaveLength(2);
 
       const byStageAndStatus = queue.query({
@@ -124,7 +124,7 @@ describe("JobQueue", () => {
         status: "queued",
       });
       expect(byStageAndStatus).toHaveLength(1);
-      expect(byStageAndStatus[0]?.sissId).toBe("SISS-101");
+      expect(byStageAndStatus[0]?.rhizomeId).toBe("SISS-101");
     });
   });
 
@@ -134,7 +134,7 @@ describe("JobQueue", () => {
       const queue = new JobQueue(database.db);
 
       const logId = queue.recordStageLog({
-        sissId: "SISS-200",
+        rhizomeId: "SISS-200",
         stage: PipelineStep.CLASSIFY,
         status: "completed",
         startedAt: "2026-03-25T20:00:00Z",
@@ -148,13 +148,13 @@ describe("JobQueue", () => {
       const row = database.db
         .query(
           `
-          SELECT siss_id, stage, status, duration_ms, metadata
+          SELECT rhizome_id, stage, status, duration_ms, metadata
           FROM job_stage_log
           WHERE id = ?;
           `,
         )
         .get(logId) as {
-        siss_id: string;
+        rhizome_id: string;
         stage: string;
         status: string;
         duration_ms: number;
@@ -162,7 +162,7 @@ describe("JobQueue", () => {
       };
 
       expect(row).toEqual({
-        siss_id: "SISS-200",
+        rhizome_id: "SISS-200",
         stage: PipelineStep.CLASSIFY,
         status: "completed",
         duration_ms: 15000,

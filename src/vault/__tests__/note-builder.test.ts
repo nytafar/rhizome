@@ -78,9 +78,10 @@ describe("buildStudyNoteMarkdown", () => {
     const frontmatter = parseStudyFrontmatter(parsed.data);
 
     expect(frontmatter.note_type).toBe("study");
-    expect(frontmatter.citekey).toBe("smith2023ashwagandha");
-    expect(frontmatter.pipeline_steps[PipelineStep.SUMMARIZE]?.status).toBe(
-      PipelineStepStatus.COMPLETE,
+    expect(frontmatter.doi).toBe("10.1016/j.phymed.2023.01.012");
+    expect(frontmatter.pipeline_status).toBe("partial");
+    expect(frontmatter.summary).toBe(
+      "[[Research/studies/_assets/smith2023ashwagandha/summary.current.md|AI Summary]]",
     );
   });
 
@@ -98,8 +99,8 @@ describe("buildStudyNoteMarkdown", () => {
     expect(markdown).toContain("> Abstract unavailable.");
     expect(markdown).toContain("## TL;DR\n_Summary not available yet._");
     expect(markdown).toContain("## Key Findings\n_Summary not available yet._");
-    expect(markdown).toContain("- _Not available_");
-    expect(markdown).toContain("| — | classify | — | — |");
+    expect(markdown).toContain("| — | classify | — |");
+    expect(markdown).toContain("## Links");
 
     const parsed = matter(markdown);
     expect(() => parseStudyFrontmatter(parsed.data)).not.toThrow();

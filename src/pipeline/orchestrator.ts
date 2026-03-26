@@ -25,7 +25,7 @@ export interface PipelineOrchestratorEvent {
     | "job-failed"
     | "stage-enqueued"
     | "stage-handler-missing";
-  sissId: string;
+  rhizomeId: string;
   stage: PipelineStep;
   detail?: string;
 }
@@ -187,7 +187,7 @@ export class PipelineOrchestrator {
     });
 
     this.updateStudyStageStatus({
-      sissId: job.sissId,
+      rhizomeId: job.rhizomeId,
       stage: job.stage,
       status: PipelineStepStatus.PROCESSING,
       updatedAt: startedAt,
@@ -197,7 +197,7 @@ export class PipelineOrchestrator {
 
     this.onEvent?.({
       type: "job-processing",
-      sissId: job.sissId,
+      rhizomeId: job.rhizomeId,
       stage: job.stage,
     });
 
@@ -213,7 +213,7 @@ export class PipelineOrchestrator {
       });
 
       this.updateStudyStageStatus({
-        sissId: job.sissId,
+        rhizomeId: job.rhizomeId,
         stage: job.stage,
         status: PipelineStepStatus.FAILED,
         updatedAt: completedAt,
@@ -223,7 +223,7 @@ export class PipelineOrchestrator {
 
       this.onEvent?.({
         type: "stage-handler-missing",
-        sissId: job.sissId,
+        rhizomeId: job.rhizomeId,
         stage: job.stage,
       });
 
@@ -251,7 +251,7 @@ export class PipelineOrchestrator {
       });
 
       this.updateStudyStageStatus({
-        sissId: job.sissId,
+        rhizomeId: job.rhizomeId,
         stage: job.stage,
         status: PipelineStepStatus.COMPLETE,
         updatedAt: completedAt,
@@ -262,7 +262,7 @@ export class PipelineOrchestrator {
 
       this.onEvent?.({
         type: "job-complete",
-        sissId: job.sissId,
+        rhizomeId: job.rhizomeId,
         stage: job.stage,
       });
 
@@ -281,7 +281,7 @@ export class PipelineOrchestrator {
       });
 
       this.updateStudyStageStatus({
-        sissId: job.sissId,
+        rhizomeId: job.rhizomeId,
         stage: job.stage,
         status: PipelineStepStatus.FAILED,
         updatedAt: completedAt,
@@ -291,7 +291,7 @@ export class PipelineOrchestrator {
 
       this.onEvent?.({
         type: "job-failed",
-        sissId: job.sissId,
+        rhizomeId: job.rhizomeId,
         stage: job.stage,
         detail: message,
       });
@@ -309,7 +309,7 @@ export class PipelineOrchestrator {
     const nextStage = this.stageSequence[currentIndex + 1];
 
     const existing = this.queue
-      .query({ sissId: job.sissId, stage: nextStage })
+      .query({ rhizomeId: job.rhizomeId, stage: nextStage })
       .find((candidate) => candidate.status === "queued" || candidate.status === "processing");
 
     if (existing) {
@@ -317,14 +317,14 @@ export class PipelineOrchestrator {
     }
 
     this.queue.enqueue({
-      sissId: job.sissId,
+      rhizomeId: job.rhizomeId,
       stage: nextStage,
       status: "queued",
       aiWindowRequired: this.aiStages.has(nextStage),
     });
 
     this.updateStudyStageStatus({
-      sissId: job.sissId,
+      rhizomeId: job.rhizomeId,
       stage: nextStage,
       status: PipelineStepStatus.QUEUED,
       updatedAt: this.now().toISOString(),
@@ -334,7 +334,7 @@ export class PipelineOrchestrator {
 
     this.onEvent?.({
       type: "stage-enqueued",
-      sissId: job.sissId,
+      rhizomeId: job.rhizomeId,
       stage: nextStage,
     });
 
@@ -342,7 +342,7 @@ export class PipelineOrchestrator {
   }
 
   private updateStudyStageStatus(params: {
-    sissId: string;
+    rhizomeId: string;
     stage: PipelineStep;
     status: PipelineStepStatus;
     updatedAt: string;
@@ -350,7 +350,7 @@ export class PipelineOrchestrator {
     error: string | null;
     durationMs?: number;
   }): void {
-    const state = this.readStudyState(params.sissId);
+    const state = this.readStudyState(params.rhizomeId);
 
     const pipelineSteps = this.parsePipelineSteps(state.pipeline_steps_json);
     pipelineSteps[params.stage] = {
@@ -373,7 +373,7 @@ export class PipelineOrchestrator {
         `
         UPDATE studies
         SET pipeline_steps_json = ?, pipeline_overall = ?, pipeline_error = ?, updated_at = ?
-        WHERE siss_id = ?;
+        WHERE rhizome_id = ?;
         `,
       )
       .run(
@@ -381,24 +381,24 @@ export class PipelineOrchestrator {
         overall,
         params.error,
         params.updatedAt,
-        params.sissId,
+        params.rhizomeId,
       );
   }
 
-  private readStudyState(sissId: string): StudyStateRow {
+  private readStudyState(rhizomeId: string): StudyStateRow {
     const row = this.db
       .query(
         `
         SELECT pipeline_steps_json, pipeline_overall, pipeline_error
         FROM studies
-        WHERE siss_id = ?
+        WHERE rhizome_id = ?
         LIMIT 1;
         `,
       )
-      .get(sissId) as StudyStateRow | null;
+      .get(rhizomeId) as StudyStateRow | null;
 
     if (!row) {
-      throw new Error(`Study not found for siss_id=${sissId}`);
+      throw new Error(`Study not found for rhizome_id=${rhizomeId}`);
     }
 
     return row;

@@ -129,10 +129,31 @@ describe("syncZoteroDelta", () => {
         .get() as { count: number };
       expect(studiesAfterFirst.count).toBe(2);
 
-      const jobsAfterFirst = database.db
-        .query("SELECT COUNT(*) AS count FROM jobs WHERE stage = ? AND status = 'queued';")
-        .get(PipelineStep.INGEST) as { count: number };
-      expect(jobsAfterFirst.count).toBe(2);
+      const syncedRow = database.db
+        .query(
+          `
+          SELECT zotero_key, zotero_version, zotero_sync_status, source_collections_json, pipeline_steps_json
+          FROM studies
+          WHERE zotero_key = 'A1'
+          LIMIT 1;
+          `,
+        )
+        .get() as {
+        zotero_key: string;
+        zotero_version: number;
+        zotero_sync_status: string;
+        source_collections_json: string | null;
+        pipeline_steps_json: string;
+      };
+
+      expect(syncedRow.zotero_version).toBe(2);
+      expect(syncedRow.zotero_sync_status).toBe("active");
+      expect(JSON.parse(syncedRow.source_collections_json ?? "[]")).toEqual(["Adaptogens"]);
+
+      const stepMetadata = JSON.parse(syncedRow.pipeline_steps_json) as Record<string, unknown>;
+      const zoteroStep = stepMetadata[PipelineStep.ZOTERO_SYNC] as Record<string, unknown>;
+      expect(zoteroStep.zotero_version).toBeUndefined();
+      expect(zoteroStep.zotero_sync_status).toBeUndefined();
 
       const second = await syncZoteroDelta({
         db: database.db,
@@ -170,7 +191,7 @@ describe("syncZoteroDelta", () => {
     });
   });
 
-  test("flags deleted upstream items in pipeline_steps_json", async () => {
+  test("flags deleted upstream items via studies zotero status columns", async () => {
     await withDatabase(async (database) => {
       const client = new FakeSyncClient({
         collections: new Map([["C1", "Adaptogens"]]),
@@ -192,15 +213,31 @@ describe("syncZoteroDelta", () => {
       expect(second.deletedFlagged).toBe(1);
 
       const row = database.db
-        .query("SELECT pipeline_steps_json FROM studies WHERE zotero_key = ?;")
-        .get("DEL1") as { pipeline_steps_json: string };
+        .query(
+          `
+          SELECT zotero_version, zotero_sync_status, removed_upstream_reason, removed_upstream_at, pipeline_steps_json
+          FROM studies
+          WHERE zotero_key = ?;
+          `,
+        )
+        .get("DEL1") as {
+        zotero_version: number;
+        zotero_sync_status: string;
+        removed_upstream_reason: string | null;
+        removed_upstream_at: string | null;
+        pipeline_steps_json: string;
+      };
+
+      expect(row.zotero_version).toBe(4);
+      expect(row.zotero_sync_status).toBe("removed_upstream");
+      expect(row.removed_upstream_reason).toBe("deleted in Zotero");
+      expect(row.removed_upstream_at).toBeString();
 
       const parsed = JSON.parse(row.pipeline_steps_json) as Record<string, unknown>;
       const step = parsed[PipelineStep.ZOTERO_SYNC] as Record<string, unknown>;
-
-      expect(step.zotero_sync_status).toBe("removed_upstream");
-      expect(step.removed_upstream_reason).toBe("deleted in Zotero");
-      expect(step.removed_upstream_at).toBeString();
+      expect(step.zotero_sync_status).toBeUndefined();
+      expect(step.removed_upstream_reason).toBeUndefined();
+      expect(step.removed_upstream_at).toBeUndefined();
     });
   });
 

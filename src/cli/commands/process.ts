@@ -27,7 +27,7 @@ interface SummarizeStudyRow {
 }
 
 interface VaultWriteStudyRow {
-  siss_id: string;
+  rhizome_id: string;
   citekey: string;
   title: string | null;
   doi: string | null;
@@ -87,20 +87,20 @@ function buildCommandLabel(options: ProcessCommandOptions): string {
   return parts.join(" ");
 }
 
-function loadStudyForSummarize(db: BunSQLiteDatabase, sissId: string): SummarizeStudyRow {
+function loadStudyForSummarize(db: BunSQLiteDatabase, rhizomeId: string): SummarizeStudyRow {
   const row = db
     .query(
       `
       SELECT citekey, title, doi, pmid
       FROM studies
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
       LIMIT 1;
       `,
     )
-    .get(sissId) as SummarizeStudyRow | null;
+    .get(rhizomeId) as SummarizeStudyRow | null;
 
   if (!row) {
-    throw new Error(`Study not found for siss_id=${sissId}`);
+    throw new Error(`Study not found for rhizome_id=${rhizomeId}`);
   }
 
   return row;
@@ -133,7 +133,7 @@ function parseStringArray(value: unknown): string[] | undefined {
 
 function extractSummaryPathFromJobMetadata(
   db: BunSQLiteDatabase,
-  sissId: string,
+  rhizomeId: string,
   vaultPath: string,
 ): string | undefined {
   const row = db
@@ -141,7 +141,7 @@ function extractSummaryPathFromJobMetadata(
       `
       SELECT metadata
       FROM jobs
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
         AND stage = ?
         AND status = 'complete'
         AND metadata IS NOT NULL
@@ -149,7 +149,7 @@ function extractSummaryPathFromJobMetadata(
       LIMIT 1;
       `,
     )
-    .get(sissId, PipelineStep.SUMMARIZE) as { metadata: string } | null;
+    .get(rhizomeId, PipelineStep.SUMMARIZE) as { metadata: string } | null;
 
   if (!row?.metadata) {
     return undefined;
@@ -182,7 +182,7 @@ function normalizePipelineOverall(value: string): PipelineOverallStatus {
 
 function loadStudyForVaultWrite(params: {
   db: BunSQLiteDatabase;
-  sissId: string;
+  rhizomeId: string;
   config: RhizomeConfig;
   now: () => Date;
 }): StudyRecord {
@@ -190,7 +190,7 @@ function loadStudyForVaultWrite(params: {
     .query(
       `
       SELECT
-        siss_id,
+        rhizome_id,
         citekey,
         title,
         doi,
@@ -200,22 +200,23 @@ function loadStudyForVaultWrite(params: {
         pipeline_error,
         pipeline_steps_json
       FROM studies
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
       LIMIT 1;
       `,
     )
-    .get(params.sissId) as VaultWriteStudyRow | null;
+    .get(params.rhizomeId) as VaultWriteStudyRow | null;
 
   if (!row) {
-    throw new Error(`Study not found for siss_id=${params.sissId}`);
+    throw new Error(`Study not found for rhizome_id=${params.rhizomeId}`);
   }
 
   const pipelineSteps = parsePipelineSteps(row.pipeline_steps_json);
   const zoteroSyncStep = pipelineSteps[PipelineStep.ZOTERO_SYNC] as Record<string, unknown> | undefined;
-  const summaryPath = extractSummaryPathFromJobMetadata(params.db, row.siss_id, params.config.vault.path);
+  const summaryPath = extractSummaryPathFromJobMetadata(params.db, row.rhizome_id, params.config.vault.path);
 
   return {
-    siss_id: row.siss_id,
+    siss_id: row.rhizome_id,
+    rhizome_id: row.rhizome_id,
     citekey: row.citekey,
     title: row.title?.trim() || "Untitled study",
     authors: [{ family: "Unknown", given: "Unknown" }],
@@ -291,7 +292,7 @@ function registerBuiltInStageHandlers(
   });
 
   orchestrator.registerStageHandler(PipelineStep.SUMMARIZE, async ({ job }) => {
-    const study = loadStudyForSummarize(params.db, job.sissId);
+    const study = loadStudyForSummarize(params.db, job.rhizomeId);
 
     const summary = await runSummarizeStage({
       study: {
@@ -325,7 +326,7 @@ function registerBuiltInStageHandlers(
   orchestrator.registerStageHandler(PipelineStep.VAULT_WRITE, async ({ job }) => {
     const study = loadStudyForVaultWrite({
       db: params.db,
-      sissId: job.sissId,
+      rhizomeId: job.rhizomeId,
       config: params.config,
       now: params.now,
     });

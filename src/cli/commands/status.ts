@@ -10,7 +10,7 @@ interface QueueCountRow {
 }
 
 interface StudyRow {
-  siss_id: string;
+  rhizome_id: string;
   citekey: string;
   title: string | null;
   pipeline_overall: string;
@@ -32,7 +32,7 @@ export interface StatusOverview {
 }
 
 export interface StatusStudyDetail {
-  siss_id: string;
+  rhizome_id: string;
   citekey: string;
   title: string | null;
   pipeline_overall: string;
@@ -93,7 +93,7 @@ function renderStudyText(study: StatusStudyDetail): string {
 
   return [
     `Study ${study.citekey}`,
-    `SISS ID: ${study.siss_id}`,
+    `RHIZOME ID: ${study.rhizome_id}`,
     `Title: ${study.title ?? "(untitled)"}`,
     `Overall: ${study.pipeline_overall}`,
     `Error: ${study.pipeline_error ?? "none"}`,
@@ -121,7 +121,7 @@ export async function runStatusCommand(
       const row = database.db
         .query(
           `
-          SELECT siss_id, citekey, title, pipeline_overall, pipeline_error, pipeline_steps_json
+          SELECT rhizome_id AS rhizome_id, citekey, title, pipeline_overall, pipeline_error, pipeline_steps_json
           FROM studies
           WHERE citekey = ?
           LIMIT 1;
@@ -134,7 +134,7 @@ export async function runStatusCommand(
       }
 
       const study: StatusStudyDetail = {
-        siss_id: row.siss_id,
+        rhizome_id: row.rhizome_id,
         citekey: row.citekey,
         title: row.title,
         pipeline_overall: row.pipeline_overall,

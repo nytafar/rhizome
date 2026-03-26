@@ -1,5 +1,13 @@
 import matter from "gray-matter";
-import type { StudyRecord } from "../types/study";
+import {
+  PipelineOverallStatus,
+  PipelineStep,
+  PipelineStepStatus,
+} from "../types/pipeline";
+import type {
+  StudyFrontmatterProjection,
+  StudyRecord,
+} from "../types/study";
 
 const UNAVAILABLE = "—";
 
@@ -83,42 +91,30 @@ function renderSnapshotRows(study: StudyRecord): string {
   ].join("\n");
 }
 
-function renderAssetLinks(study: StudyRecord): string {
-  const summaryLink = study.summary_path
-    ? formatWikilink(study.summary_path, "AI Summary")
-    : "_Not available_";
-  const pdfLink = study.pdf_path
-    ? formatWikilink(study.pdf_path, "PDF")
-    : "_Not available_";
-  const fulltextLink = study.fulltext_path
-    ? formatWikilink(study.fulltext_path, "Full Text")
-    : "_Not available_";
-  const zoteroLink = study.zotero_key
-    ? `[Open in Zotero](zotero://select/items/${study.zotero_key})`
-    : "_Not available_";
+function normalizeSkillLabel(stage: "summary" | "classify", version?: string): string {
+  if (!version) {
+    return UNAVAILABLE;
+  }
 
-  return [
-    `- ${pdfLink}`,
-    `- ${fulltextLink}`,
-    `- ${summaryLink}`,
-    `- ${zoteroLink}`,
-  ].join("\n");
+  if (version.includes("@")) {
+    return version;
+  }
+
+  return `${stage === "summary" ? "summarizer" : "classifier"}@${version}`;
 }
 
 function renderVersionHistory(study: StudyRecord): string {
   const summaryDate = study.summary_generated_at ?? UNAVAILABLE;
-  const summarySkill = study.summary_skill_version ?? UNAVAILABLE;
-  const summaryModel = study.summary_model ?? UNAVAILABLE;
+  const summarySkill = normalizeSkillLabel("summary", study.summary_skill_version);
 
   const classifyDate = study.classifier_generated_at ?? UNAVAILABLE;
-  const classifySkill = study.classifier_skill_version ?? UNAVAILABLE;
-  const classifyModel = study.classifier_model ?? UNAVAILABLE;
+  const classifySkill = normalizeSkillLabel("classify", study.classifier_skill_version);
 
   return [
-    "| Date | Stage | Skill Version | Model |",
-    "|---|---|---|---|",
-    `| ${summaryDate} | summary | ${summarySkill} | ${summaryModel} |`,
-    `| ${classifyDate} | classify | ${classifySkill} | ${classifyModel} |`,
+    "| Date | Stage | Skill |",
+    "|---|---|---|",
+    `| ${summaryDate} | summary | ${summarySkill} |`,
+    `| ${classifyDate} | classify | ${classifySkill} |`,
   ].join("\n");
 }
 
@@ -144,13 +140,55 @@ function renderSummaryEmbeds(study: StudyRecord): string {
   ].join("\n");
 }
 
-function buildStudyFrontmatter(study: StudyRecord) {
+function resolveFrontmatterIdentity(study: StudyRecord): string | undefined {
+  const rhizomeId = (study as StudyRecord & { rhizome_id?: string }).rhizome_id;
+  return rhizomeId ?? study.siss_id;
+}
+
+function derivePipelineStatus(
+  overall: PipelineOverallStatus,
+): StudyFrontmatterProjection["pipeline_status"] {
+  switch (overall) {
+    case PipelineOverallStatus.COMPLETE:
+      return "complete";
+    case PipelineOverallStatus.NEEDS_ATTENTION:
+      return "failed";
+    case PipelineOverallStatus.NOT_STARTED:
+      return "pending";
+    case PipelineOverallStatus.IN_PROGRESS:
+    default:
+      return "partial";
+  }
+}
+
+function hasClassificationSignal(study: StudyRecord): boolean {
+  const classifyStatus = study.pipeline_steps[PipelineStep.CLASSIFY]?.status;
+  return classifyStatus === PipelineStepStatus.COMPLETE || Boolean(study.classifier_generated_at);
+}
+
+function buildSummaryVersions(study: StudyRecord): string[] | undefined {
+  if (!study.summary_path) {
+    return undefined;
+  }
+
+  return [formatWikilink(study.summary_path, "current")];
+}
+
+function buildStudyFrontmatter(study: StudyRecord): StudyFrontmatterProjection {
+  const includeRhizomeIdentity = !study.doi && !study.pmid;
+  const rhizomeIdentity = includeRhizomeIdentity
+    ? resolveFrontmatterIdentity(study)
+    : undefined;
+
   return cleanUndefinedDeep({
-    siss_id: study.siss_id,
-    citekey: study.citekey,
+    rhizome_id: rhizomeIdentity,
     note_type: "study" as const,
-    pipeline_overall: study.pipeline_overall,
-    pipeline_steps: study.pipeline_steps,
+
+    has_pdf: study.pdf_available || Boolean(study.pdf_path),
+    has_fulltext: Boolean(study.fulltext_path),
+    has_summary: Boolean(study.summary_path),
+    has_classification: hasClassificationSignal(study),
+    pipeline_status: derivePipelineStatus(study.pipeline_overall),
     pipeline_error: study.pipeline_error,
     last_pipeline_run: study.last_pipeline_run,
 
@@ -163,34 +201,38 @@ function buildStudyFrontmatter(study: StudyRecord) {
     pmcid: study.pmcid,
     isbn: study.isbn,
     abstract: study.abstract,
-    volume: study.volume,
-    issue: study.issue,
-    pages: study.pages,
     url: study.url,
     item_type: study.item_type,
 
     zotero_key: study.zotero_key,
-    zotero_version: study.zotero_version,
-    zotero_sync_status: study.zotero_sync_status,
-    removed_upstream_at: study.removed_upstream_at,
-    removed_upstream_reason: study.removed_upstream_reason,
-
-    source: study.source,
     source_collections: study.source_collections,
-    source_tags: study.source_tags,
-    date_added: study.date_added,
 
-    asset_dir: study.asset_dir,
-    pdf_path: study.pdf_path,
+    tags: study.source_tags,
+
+    pdf: study.pdf_path ? formatWikilink(study.pdf_path, "PDF") : undefined,
+    fulltext: study.fulltext_path
+      ? formatWikilink(study.fulltext_path, "Full Text")
+      : undefined,
+    summary: study.summary_path
+      ? formatWikilink(study.summary_path, "AI Summary")
+      : undefined,
+    user_note: null,
     pdf_available: study.pdf_available,
     pdf_source: study.pdf_source,
-    fulltext_path: study.fulltext_path,
-    summary_path: study.summary_path,
 
+    summary_skill: normalizeSkillLabel("summary", study.summary_skill_version),
+    classifier_skill: normalizeSkillLabel("classify", study.classifier_skill_version),
+    summary_generated_at: study.summary_generated_at,
+    classifier_generated_at: study.classifier_generated_at,
+    summary_versions: buildSummaryVersions(study),
   });
 }
 
 export function buildStudyNoteMarkdown(study: StudyRecord): string {
+  const zoteroLink = study.zotero_key
+    ? `[Open in Zotero](zotero://select/items/${study.zotero_key})`
+    : "_Not available_";
+
   const content = [
     `# ${study.title}`,
     "",
@@ -202,11 +244,11 @@ export function buildStudyNoteMarkdown(study: StudyRecord): string {
     "",
     renderSummaryEmbeds(study),
     "",
-    "## Assets",
-    renderAssetLinks(study),
-    "",
     "## Version History",
     renderVersionHistory(study),
+    "",
+    "## Links",
+    `- ${zoteroLink}`,
     "",
   ].join("\n");
 

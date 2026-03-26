@@ -114,14 +114,14 @@ describe("intelligence loop e2e", () => {
         database.init();
 
         const studies = database.db
-          .query("SELECT citekey FROM studies ORDER BY citekey ASC;")
-          .all() as Array<{ citekey: string }>;
+          .query("SELECT citekey, doi, pmid, rhizome_id FROM studies ORDER BY citekey ASC;")
+          .all() as Array<{ citekey: string; doi: string | null; pmid: string | null; rhizome_id: string }>;
 
         database.close();
 
         expect(studies).toHaveLength(2);
 
-        for (const { citekey } of studies) {
+        for (const { citekey, doi, pmid, rhizome_id } of studies) {
           const notePath = join(vaultPath, "Research", "studies", `${citekey}.md`);
           const noteExists = await Bun.file(notePath).exists();
           expect(noteExists).toBe(true);
@@ -130,7 +130,12 @@ describe("intelligence loop e2e", () => {
           const parsed = matter(noteText);
           const frontmatter = parseStudyFrontmatter(parsed.data);
 
-          expect(frontmatter.citekey).toBe(citekey);
+          expect(frontmatter.note_type).toBe("study");
+          expect(frontmatter.has_summary).toBe(true);
+
+          if (!doi && !pmid) {
+            expect(frontmatter.rhizome_id).toBe(rhizome_id);
+          }
 
           const summaryPath = join(
             vaultPath,

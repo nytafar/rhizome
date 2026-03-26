@@ -120,7 +120,7 @@ async function captureDbSnapshot(dbPath: string): Promise<EvidenceDbSnapshot | u
     const studies = database.db
       .query(
         `
-          SELECT siss_id, citekey, title, pipeline_overall, pipeline_error, pipeline_steps_json
+          SELECT rhizome_id, citekey, title, pipeline_overall, pipeline_error, pipeline_steps_json
           FROM studies
           ORDER BY citekey ASC;
         `,
@@ -130,7 +130,7 @@ async function captureDbSnapshot(dbPath: string): Promise<EvidenceDbSnapshot | u
     const jobs = database.db
       .query(
         `
-          SELECT id, siss_id, stage, status, retry_count, error_message, completed_at
+          SELECT id, rhizome_id, stage, status, retry_count, error_message, completed_at
           FROM jobs
           ORDER BY id ASC;
         `,
