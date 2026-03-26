@@ -9,7 +9,11 @@ import {
   type PipelineStepState,
 } from "../types/pipeline";
 import type { StudyRecord, StudyFrontmatterProjection } from "../types/study";
-import { buildStudyNoteMarkdown } from "../vault/note-builder";
+import {
+  buildStudyNoteMarkdown,
+  USER_PRESERVED_FRONTMATTER_KEYS,
+  type UserPreservedFrontmatterKey,
+} from "../vault/note-builder";
 
 interface VaultPathsConfig {
   research_root: string;
@@ -37,6 +41,7 @@ export interface VaultWriteStageResult {
     stage: PipelineStep.VAULT_WRITE;
     durationMs: number;
     frontmatterValid: true;
+    preservedKeys: UserPreservedFrontmatterKey[];
   };
 }
 
@@ -74,6 +79,41 @@ function withVaultWriteStep(study: StudyRecord, updatedAt: string): StudyRecord 
 
 function resolveStudyIdentity(study: StudyRecord): string {
   return (study as StudyRecord & { rhizome_id?: string }).rhizome_id ?? study.siss_id;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+async function readExistingFrontmatterForMerge(notePath: string): Promise<{
+  frontmatter?: Partial<StudyFrontmatterProjection>;
+  preservedKeys: UserPreservedFrontmatterKey[];
+}> {
+  const noteFile = Bun.file(notePath);
+  if (!(await noteFile.exists())) {
+    return { preservedKeys: [] };
+  }
+
+  const raw = await noteFile.text();
+  const parsed = matter(raw);
+  if (!isRecord(parsed.data)) {
+    return { preservedKeys: [] };
+  }
+
+  const preservedKeys: UserPreservedFrontmatterKey[] = [];
+  const preservedFrontmatter: Partial<StudyFrontmatterProjection> = {};
+
+  for (const key of USER_PRESERVED_FRONTMATTER_KEYS) {
+    if (key in parsed.data) {
+      preservedKeys.push(key);
+      preservedFrontmatter[key] = parsed.data[key] as never;
+    }
+  }
+
+  return {
+    frontmatter: preservedKeys.length > 0 ? preservedFrontmatter : undefined,
+    preservedKeys,
+  };
 }
 
 function upsertPipelineStepInDb(params: {
@@ -147,7 +187,14 @@ export async function runVaultWriteStage(
     asset_dir: `${assetDirRelative}/`,
   };
 
-  const markdown = buildStudyNoteMarkdown(studyWithAssetDir, input.existingFrontmatter);
+  const existingMerge = input.existingFrontmatter
+    ? {
+        frontmatter: input.existingFrontmatter,
+        preservedKeys: USER_PRESERVED_FRONTMATTER_KEYS.filter((key) => key in input.existingFrontmatter),
+      }
+    : await readExistingFrontmatterForMerge(notePath);
+
+  const markdown = buildStudyNoteMarkdown(studyWithAssetDir, existingMerge.frontmatter);
   const parsedMatter = matter(markdown);
   const frontmatter = parseStudyFrontmatter(parsedMatter.data);
 
@@ -174,6 +221,7 @@ export async function runVaultWriteStage(
       note_path: notePathRelative,
       asset_dir: `${assetDirRelative}/`,
       frontmatter_valid: true,
+      preserved_keys: existingMerge.preservedKeys,
     },
   });
 
@@ -188,6 +236,7 @@ export async function runVaultWriteStage(
       stage: PipelineStep.VAULT_WRITE,
       durationMs,
       frontmatterValid: true,
+      preservedKeys: existingMerge.preservedKeys,
     },
   };
 }

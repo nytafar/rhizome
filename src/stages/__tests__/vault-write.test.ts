@@ -104,6 +104,7 @@ describe("runVaultWriteStage", () => {
     );
     expect(result.metadata.stage).toBe(PipelineStep.VAULT_WRITE);
     expect(result.metadata.frontmatterValid).toBe(true);
+    expect(result.metadata.preservedKeys).toEqual([]);
 
     const parsedMatter = matter(await readFile(result.notePath, "utf8"));
     const frontmatter = parseStudyFrontmatter(parsedMatter.data);
@@ -148,11 +149,13 @@ describe("runVaultWriteStage", () => {
       note_path: string;
       asset_dir: string;
       frontmatter_valid: boolean;
+      preserved_keys: string[];
     };
 
     expect(metadata.note_path).toBe("Research/studies/smith2023ashwagandha.md");
     expect(metadata.asset_dir).toBe("Research/studies/_assets/smith2023ashwagandha/");
     expect(metadata.frontmatter_valid).toBe(true);
+    expect(metadata.preserved_keys).toEqual([]);
 
     database.close();
   });
@@ -204,7 +207,7 @@ describe("runVaultWriteStage", () => {
 
     database.close();
   });
-  test("preserves user-managed frontmatter fields when existing frontmatter is provided", async () => {
+  test("reads existing note frontmatter and preserves user-managed fields", async () => {
     const root = await makeTempDir("rhizome-vault-write-");
     const dbPath = join(root, "rhizome.sqlite");
 
@@ -229,15 +232,36 @@ describe("runVaultWriteStage", () => {
         JSON.stringify(study.pipeline_steps),
       );
 
+    const notePath = join(root, "Research", "studies", "smith2023ashwagandha.md");
+    await Bun.write(
+      notePath,
+      [
+        "---",
+        "note_type: study",
+        "has_pdf: false",
+        "has_fulltext: false",
+        "has_summary: false",
+        "has_classification: false",
+        "pipeline_status: partial",
+        "title: Legacy",
+        "authors:",
+        "  - family: Legacy",
+        "    given: User",
+        "year: 2020",
+        "pdf_available: false",
+        "tags:",
+        "  - manual-tag",
+        "user_rating: 4",
+        "user_status: reading",
+        "notes: keep me",
+        "---",
+        "# Legacy",
+      ].join("\n"),
+    );
+
     const result = await runVaultWriteStage({
       db: database.db,
       study,
-      existingFrontmatter: {
-        tags: ["manual-tag"],
-        user_rating: 4,
-        user_status: "reading",
-        notes: "keep me",
-      },
       vaultPath: root,
       vault: VAULT_CONFIG,
       now: () => new Date("2026-03-25T22:56:00.000Z"),
@@ -250,6 +274,22 @@ describe("runVaultWriteStage", () => {
     expect(frontmatter.user_rating).toBe(4);
     expect(frontmatter.user_status).toBe("reading");
     expect(frontmatter.notes).toBe("keep me");
+    expect(result.metadata.preservedKeys.sort()).toEqual(["notes", "tags", "user_rating", "user_status"]);
+
+    const stageLog = database.db
+      .query(
+        `
+        SELECT metadata
+        FROM job_stage_log
+        WHERE rhizome_id = ?
+        ORDER BY id DESC
+        LIMIT 1;
+        `,
+      )
+      .get(study.rhizome_id) as { metadata: string };
+
+    const metadata = JSON.parse(stageLog.metadata) as { preserved_keys: string[] };
+    expect(metadata.preserved_keys.sort()).toEqual(["notes", "tags", "user_rating", "user_status"]);
 
     database.close();
   });
