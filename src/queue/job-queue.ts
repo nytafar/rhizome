@@ -57,6 +57,20 @@ export interface RecordStageLogInput {
   metadata?: string | null;
 }
 
+export interface RecordPipelineRunInput {
+  rhizomeId: string;
+  runId: string;
+  step: PipelineStep;
+  status: "started" | "completed" | "failed" | "skipped";
+  startedAt?: string | null;
+  completedAt?: string | null;
+  retries?: number;
+  skipReason?: string | null;
+  error?: string | null;
+  model?: string | null;
+  skill?: string | null;
+}
+
 type RawQueueJob = {
   id: number;
   rhizome_id: string;
@@ -80,6 +94,7 @@ export class JobQueue {
   private readonly updateStatusStmt: Statement;
   private readonly queryJobsStmt: Statement;
   private readonly recordStageLogStmt: Statement;
+  private readonly recordPipelineRunStmt: Statement;
 
   public constructor(private readonly db: BunSQLiteDatabase) {
     this.enqueueStmt = this.db.query(
@@ -131,6 +146,25 @@ export class JobQueue {
       `
       INSERT INTO job_stage_log (rhizome_id, stage, status, started_at, completed_at, duration_ms, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?);
+      `,
+    );
+
+    this.recordPipelineRunStmt = this.db.query(
+      `
+      INSERT INTO pipeline_runs (
+        rhizome_id,
+        run_id,
+        step,
+        status,
+        started_at,
+        completed_at,
+        retries,
+        skip_reason,
+        error,
+        model,
+        skill
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `,
     );
   }
@@ -196,6 +230,24 @@ export class JobQueue {
       input.completedAt ?? null,
       input.durationMs ?? null,
       input.metadata ?? null,
+    ) as { lastInsertRowid: number | bigint };
+
+    return Number(result.lastInsertRowid);
+  }
+
+  public recordPipelineRun(input: RecordPipelineRunInput): number {
+    const result = this.recordPipelineRunStmt.run(
+      input.rhizomeId,
+      input.runId,
+      input.step,
+      input.status,
+      input.startedAt ?? null,
+      input.completedAt ?? null,
+      input.retries ?? 0,
+      input.skipReason ?? null,
+      input.error ?? null,
+      input.model ?? null,
+      input.skill ?? null,
     ) as { lastInsertRowid: number | bigint };
 
     return Number(result.lastInsertRowid);

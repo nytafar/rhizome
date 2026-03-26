@@ -65,6 +65,31 @@ function readPipelineState(database: Database, rhizomeId: string): {
   };
 }
 
+function readPipelineRuns(database: Database, rhizomeId: string): Array<{
+  run_id: string;
+  step: PipelineStep;
+  status: string;
+  retries: number;
+  error: string | null;
+}> {
+  return database.db
+    .query(
+      `
+      SELECT run_id, step, status, retries, error
+      FROM pipeline_runs
+      WHERE rhizome_id = ?
+      ORDER BY id ASC;
+      `,
+    )
+    .all(rhizomeId) as Array<{
+    run_id: string;
+    step: PipelineStep;
+    status: string;
+    retries: number;
+    error: string | null;
+  }>;
+}
+
 describe("PipelineOrchestrator", () => {
   test("processNonAI and processAI move phase-1 stages forward sequentially", async () => {
     await withDatabase(async (database) => {
@@ -135,12 +160,61 @@ describe("PipelineOrchestrator", () => {
       expect(finalState.steps[PipelineStep.SUMMARIZE]?.status).toBe(PipelineStepStatus.COMPLETE);
       expect(finalState.steps[PipelineStep.VAULT_WRITE]?.status).toBe(PipelineStepStatus.COMPLETE);
 
+      const pipelineRuns = readPipelineRuns(database, "SISS-001");
+      expect(pipelineRuns).toHaveLength(4);
+      expect(pipelineRuns.map((row) => row.step)).toEqual([
+        PipelineStep.INGEST,
+        PipelineStep.ZOTERO_SYNC,
+        PipelineStep.SUMMARIZE,
+        PipelineStep.VAULT_WRITE,
+      ]);
+      expect(pipelineRuns.every((row) => row.status === "completed")).toBe(true);
+      expect(pipelineRuns.every((row) => row.retries === 0)).toBe(true);
+      expect(new Set(pipelineRuns.map((row) => row.run_id)).size).toBe(3);
+
       expect(callOrder).toEqual([
         PipelineStep.INGEST,
         PipelineStep.ZOTERO_SYNC,
         PipelineStep.SUMMARIZE,
         PipelineStep.VAULT_WRITE,
       ]);
+    });
+  });
+
+  test("records failed pipeline_runs entries when a stage handler throws", async () => {
+    await withDatabase(async (database) => {
+      insertStudy(database, "SISS-FAIL-001", "smith2026fail");
+
+      const queue = new JobQueue(database.db);
+      queue.enqueue({
+        rhizomeId: "SISS-FAIL-001",
+        stage: PipelineStep.INGEST,
+        status: "queued",
+      });
+
+      const orchestrator = new PipelineOrchestrator({
+        db: database.db,
+        queue,
+      });
+
+      orchestrator.registerStageHandler(PipelineStep.INGEST, async () => {
+        throw new Error("ingest exploded");
+      });
+
+      const result = await orchestrator.processNonAI();
+      expect(result).toEqual({
+        processed: 1,
+        succeeded: 0,
+        failed: 1,
+        enqueued: 0,
+      });
+
+      const pipelineRuns = readPipelineRuns(database, "SISS-FAIL-001");
+      expect(pipelineRuns).toHaveLength(1);
+      expect(pipelineRuns[0]?.status).toBe("failed");
+      expect(pipelineRuns[0]?.step).toBe(PipelineStep.INGEST);
+      expect(pipelineRuns[0]?.retries).toBe(1);
+      expect(pipelineRuns[0]?.error).toContain("ingest exploded");
     });
   });
 

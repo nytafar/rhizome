@@ -145,6 +145,8 @@ export class PipelineOrchestrator {
       enqueued: 0,
     };
 
+    const runId = this.buildRunId();
+
     while (options.batchSize === undefined || result.processed < options.batchSize) {
       const nextJob = this.pickNextJob(options.ai);
       if (!nextJob) {
@@ -152,7 +154,7 @@ export class PipelineOrchestrator {
       }
 
       result.processed += 1;
-      const didSucceed = await this.processJob(nextJob);
+      const didSucceed = await this.processJob(nextJob, runId);
 
       if (didSucceed) {
         result.succeeded += 1;
@@ -175,7 +177,7 @@ export class PipelineOrchestrator {
     );
   }
 
-  private async processJob(job: QueueJob): Promise<boolean> {
+  private async processJob(job: QueueJob, runId: string): Promise<boolean> {
     const startedAtDate = this.now();
     const startedAt = startedAtDate.toISOString();
     const handler = this.handlers[job.stage];
@@ -221,6 +223,18 @@ export class PipelineOrchestrator {
         error: `No handler registered for stage: ${job.stage}`,
       });
 
+      this.queue.recordPipelineRun({
+        rhizomeId: job.rhizomeId,
+        runId,
+        step: job.stage,
+        status: "failed",
+        startedAt,
+        completedAt,
+        retries: job.retryCount + 1,
+        skipReason: "handler_missing",
+        error: `No handler registered for stage: ${job.stage}`,
+      });
+
       this.onEvent?.({
         type: "stage-handler-missing",
         rhizomeId: job.rhizomeId,
@@ -260,6 +274,19 @@ export class PipelineOrchestrator {
         error: null,
       });
 
+      const modelSkill = this.extractModelSkill(stageResult?.metadata);
+      this.queue.recordPipelineRun({
+        rhizomeId: job.rhizomeId,
+        runId,
+        step: job.stage,
+        status: "completed",
+        startedAt,
+        completedAt,
+        retries: job.retryCount,
+        model: modelSkill.model,
+        skill: modelSkill.skill,
+      });
+
       this.onEvent?.({
         type: "job-complete",
         rhizomeId: job.rhizomeId,
@@ -285,6 +312,17 @@ export class PipelineOrchestrator {
         stage: job.stage,
         status: PipelineStepStatus.FAILED,
         updatedAt: completedAt,
+        retries: job.retryCount + 1,
+        error: message,
+      });
+
+      this.queue.recordPipelineRun({
+        rhizomeId: job.rhizomeId,
+        runId,
+        step: job.stage,
+        status: "failed",
+        startedAt,
+        completedAt,
         retries: job.retryCount + 1,
         error: message,
       });
@@ -339,6 +377,43 @@ export class PipelineOrchestrator {
     });
 
     return 1;
+  }
+
+  private buildRunId(): string {
+    return crypto.randomUUID();
+  }
+
+  private extractModelSkill(
+    metadata: Record<string, unknown> | undefined,
+  ): { model: string | null; skill: string | null } {
+    if (!metadata) {
+      return { model: null, skill: null };
+    }
+
+    const model = this.firstString(metadata, ["model", "summary_model", "classifier_model"]);
+    const skill = this.firstString(metadata, [
+      "skill",
+      "summary_skill",
+      "classifier_skill",
+      "summary_skill_version",
+      "classifier_skill_version",
+    ]);
+
+    return { model, skill };
+  }
+
+  private firstString(
+    record: Record<string, unknown>,
+    keys: string[],
+  ): string | null {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim().length > 0) {
+        return value;
+      }
+    }
+
+    return null;
   }
 
   private updateStudyStageStatus(params: {

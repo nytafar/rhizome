@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 3;
+export const SCHEMA_VERSION = 4;
 
 const CREATE_STUDIES_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS studies (
@@ -255,6 +255,29 @@ const MIGRATION_003_SQL: string[] = [
   "CREATE INDEX IF NOT EXISTS idx_studies_zotero_sync_status ON studies(zotero_sync_status);",
 ];
 
+const MIGRATION_004_SQL: string[] = [
+  `
+  CREATE TABLE IF NOT EXISTS pipeline_runs (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    rhizome_id TEXT NOT NULL REFERENCES studies(rhizome_id),
+    run_id TEXT NOT NULL,
+    step TEXT NOT NULL,
+    status TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    retries INTEGER NOT NULL DEFAULT 0,
+    skip_reason TEXT,
+    error TEXT,
+    model TEXT,
+    skill TEXT,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
+  "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_study ON pipeline_runs(rhizome_id);",
+  "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_run ON pipeline_runs(run_id);",
+  "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);",
+];
+
 export interface SchemaMigration {
   version: number;
   statements: string[];
@@ -272,5 +295,9 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 3,
     statements: MIGRATION_003_SQL,
+  },
+  {
+    version: 4,
+    statements: MIGRATION_004_SQL,
   },
 ];

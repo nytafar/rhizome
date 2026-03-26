@@ -30,6 +30,7 @@ describe("Database", () => {
         "config_meta",
         "job_stage_log",
         "jobs",
+        "pipeline_runs",
         "studies",
         "zotero_sync_state",
       ]);
@@ -38,7 +39,7 @@ describe("Database", () => {
         .query("SELECT value FROM config_meta WHERE key = 'db_schema_version';")
         .get() as { value: string };
 
-      expect(schemaVersion.value).toBe("3");
+      expect(schemaVersion.value).toBe("4");
 
       const studiesColumns = database.db.query("PRAGMA table_info(studies);").all() as Array<{ name: string }>;
       const jobsColumns = database.db.query("PRAGMA table_info(jobs);").all() as Array<{ name: string }>;
@@ -252,7 +253,7 @@ describe("Database", () => {
       const schemaVersion = database.db
         .query("SELECT value FROM config_meta WHERE key = 'db_schema_version';")
         .get() as { value: string };
-      expect(schemaVersion.value).toBe("3");
+      expect(schemaVersion.value).toBe("4");
 
       const migratedStudy = database.db
         .query(
