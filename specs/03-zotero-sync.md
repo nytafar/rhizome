@@ -1,6 +1,6 @@
 # 03 — Zotero Sync
 
-**Version:** 0.2 | **Status:** Draft for review
+**Version:** 0.3 | **Status:** Active (updated for v0.3 data contract)
 **Depends on:** 00-architecture-overview, 01-schema-vault-design, 02-pipeline-queue
 **Consumed by:** Pipeline (as `ingest` + `zotero_sync` step implementation)
 
@@ -49,8 +49,9 @@ Zotero uses a library-wide version number. Every modification increments it.
       → NEW: insert study, enqueue from `ingest`
 4. Fetch deleted keys: GET /users/{uid}/deleted?since={version}
    → For each deleted Zotero key found locally:
-      - set `zotero_sync_status: removed_upstream`
-      - set `removed_upstream_at` + `removed_upstream_reason`
+      - set `tombstone = true` on `studies` row
+      - set `tombstone_reason` + `tombstone_at`
+      - set `zotero_sync_status = 'removed_upstream'`
       - keep note/assets intact for manual review
 5. Update zotero_sync_state with new library_version and timestamp
 6. On error: do NOT update library_version (ensures retry catches everything)
@@ -109,7 +110,7 @@ rhizome sync zotero --full    # force full sync, resets library_version to 0
 | Zotero Field | StudyRecord Field | Notes |
 |---|---|---|
 | `key` | `zotero_key` | Zotero's item key |
-| `version` | `zotero_version` | For delta detection |
+| `version` | `zotero_version` | For delta detection (SQLite column, not frontmatter) |
 | `data.title` | `title` | |
 | `data.creators` (type=author) | `authors` | Map `firstName`+`lastName` → `{given, family}` |
 | `data.date` | `year` | Parse year from various date formats |
@@ -117,15 +118,17 @@ rhizome sync zotero --full    # force full sync, resets library_version to 0
 | `data.DOI` | `doi` | Normalize: strip `https://doi.org/` prefix |
 | `data.url` | `url` | |
 | `data.abstractNote` | `abstract` | |
-| `data.volume` | `volume` | |
-| `data.issue` | `issue` | |
-| `data.pages` | `pages` | |
+| `data.volume` | (internal only) | Not projected to frontmatter (v0.3) |
+| `data.issue` | (internal only) | Not projected to frontmatter (v0.3) |
+| `data.pages` | (internal only) | Not projected to frontmatter (v0.3) |
 | `data.itemType` | `item_type` | |
 | `data.extra` | `pmid` (extracted) | Parse PMID from extra field: `PMID: 12345` |
 | `data.extra` | `pmcid` (extracted) | Parse PMCID from extra field: `PMCID: PMC1234567` |
-| `data.tags` | `source_tags` | Array of tag objects → string array |
+| `data.tags` | `tags` | Array of tag objects → string array. Written on initial ingest only. |
 | `data.collections` | `source_collections` | Collection keys → resolve to names |
 | `data.dateAdded` | `date_added` | |
+
+> **v0.3 changes:** `source_tags` renamed to `tags` (single Obsidian-native field, initial-ingest-only). `volume`, `issue`, `pages` still mapped internally but not projected to frontmatter. `zotero_version` stored as SQLite column instead of in `pipeline_steps_json`.
 
 ### PMID Extraction from Extra Field
 Zotero stores PMID in the `extra` field (no dedicated field):
@@ -139,13 +142,14 @@ PMCID extraction:
 Parse with regex: `/PMCID:\s*(PMC\d+)/i`
 
 ### Upstream Deletions (Manual Review Mode)
-Deleted Zotero items are never hard-deleted from vault in MVP. They are flagged for review:
+Deleted Zotero items are never hard-deleted from vault in MVP. They are flagged for review in SQLite:
 ```yaml
-zotero_sync_status: "removed_upstream"
-removed_upstream_at: "2026-03-25T17:55:00Z"
-removed_upstream_reason: "deleted in Zotero"
+studies.tombstone: true
+studies.tombstone_reason: "deleted in Zotero"
+studies.tombstone_at: "2026-03-25T17:55:00Z"
+studies.zotero_sync_status: "removed_upstream"
 ```
-Users decide follow-up action manually (keep/archive/delete).
+Users decide follow-up action manually (keep/archive/delete). Frontmatter does not carry tombstone fields in v0.3.
 
 ### Collection Name Resolution
 Zotero API returns collection keys, not names. Cache collection tree:
@@ -235,7 +239,7 @@ class ZoteroClient {
 - Verify: second sync with no changes produces no new jobs
 - Verify: modify one study in Zotero, sync detects the change
 - Verify: delta sync works correctly (only changed items pulled)
-- Verify: deleted item in Zotero is flagged as `removed_upstream` in vault metadata
+- Verify: deleted item in Zotero is flagged as `removed_upstream` in SQLite (`studies.zotero_sync_status`) with tombstone metadata
 
 ### Fixtures Needed
 - `zotero-item-journal.json` — typical journal article

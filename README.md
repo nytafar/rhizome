@@ -55,7 +55,7 @@ Zotero  ──→  Rhizome  ──→  Obsidian Vault
   │            │  │  metadata  │
   │            │  │            │
   │            │  └──→ SQLite  │  Pipeline state, job queue,
-  │            │       (.rhizome/)│  audit log, sync state
+  │            │       (.siss/) │  audit log, sync state
   │            │               │
   │            └──→ Claude     │  AI summaries + classification
   │                 (CLI)      │  during configured time windows
@@ -163,8 +163,8 @@ rhizome sync zotero
 # Fetch PDFs and parse to markdown
 rhizome process
 
-# Run AI summarization (during configured windows, or use --now to skip)
-rhizome process --ai --now
+# Run AI summarization (respects configured windows)
+rhizome process --ai
 
 # Check progress
 rhizome status
@@ -268,44 +268,40 @@ rhizome init                          # Interactive setup wizard
 rhizome sync zotero                   # Pull changes from Zotero
 rhizome process                       # Run non-AI pipeline stages
 rhizome process --ai                  # Run AI stages (respects time windows)
-rhizome process --ai --now            # Run AI stages immediately
 rhizome status                        # Pipeline overview
 rhizome status --citekey smith2023    # Detail for one study
-rhizome reprocess --stage summarize   # Rerun summaries (e.g., after skill update)
-rhizome retry --all-failed            # Retry all failed studies
-rhizome taxonomy status               # View classification taxonomy
-rhizome taxonomy review               # Review pending taxonomy proposals
-rhizome audit --citekey smith2023     # Full processing history
+rhizome lock status                   # Inspect active writer lock
+rhizome lock clear --force            # Clear stale writer lock
 ```
 
-Every command supports `--json` for machine-readable output — Rhizome is designed to be invoked by agents as easily as by humans.
+Planned commands (`reprocess`, `retry`, `taxonomy`, `audit`) are specified in `specs/07-cli-config.md` and are implemented in later milestones.
 
 ---
 
 ## Project Structure
 
-```
+```text
 your-vault/
 ├── Research/
 │   ├── studies/
-│   │   ├── smith2023ashwagandha.md       # Study note (frontmatter + summary link)
-│   │   └── jones2024curcumin.md
-│   ├── _assets/
-│   │   ├── smith2023ashwagandha/
-│   │   │   ├── source.pdf                 # Original PDF
-│   │   │   ├── fulltext.md                # Parsed markdown
-│   │   │   ├── summary.current.md         # AI summary (latest)
-│   │   │   └── classify.current.json      # Classification output
-│   │   └── jones2024curcumin/
-│   ├── study-notes/                        # Your manual notes (never touched)
+│   │   ├── smith2023ashwagandha.md       # Study note (frontmatter + summary embed)
+│   │   ├── jones2024curcumin.md
+│   │   └── _assets/
+│   │       ├── smith2023ashwagandha/
+│   │       │   ├── source.pdf             # Original PDF
+│   │       │   ├── fulltext.md            # Parsed markdown (M002)
+│   │       │   ├── summary.current.md     # AI summary (latest)
+│   │       │   └── classify.current.json  # Classification output (M004)
+│   │       └── jones2024curcumin/
+│   ├── study-notes/                       # Your manual notes (never touched)
 │   └── _system/
-│       ├── taxonomy.json                   # Evolving classification system
-│       ├── studies.base                    # Obsidian Bases view
+│       ├── taxonomy.json                  # Evolving classification system (M004)
+│       ├── studies.base                   # Obsidian Bases view (M004)
 │       └── review-queue.base
-└── .rhizome/
-    ├── rhizome.db                             # SQLite (system of record)
-    ├── config.yaml                         # Configuration
-    └── skills/                             # AI skill prompts
+└── .siss/
+    ├── siss.db                            # SQLite (system of record)
+    ├── config.yaml                        # Configuration
+    └── skills/                            # AI skill prompts
         ├── summarizer.md
         └── classifier.md
 ```
@@ -331,7 +327,7 @@ Detailed architecture and design specs are in [`specs/`](specs/README.md):
 
 ## Status
 
-Rhizome is in active development. The spec suite is stable and implementation is beginning with Phase 1 (Zotero sync + abstract-only AI summaries).
+M001 is complete (foundation, sync, summarize, vault write, CLI/status/lock, boundary contract). The next milestone (M005) performs a contract migration to frontmatter v0.3 (`rhizome_id`, slim pipeline surface fields, Obsidian-native tags/wikilink assets, and merge-safe user field preservation) before M002 PDF/fulltext work.
 
 ---
 

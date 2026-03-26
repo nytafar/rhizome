@@ -1,6 +1,6 @@
 # 02 — Pipeline & Queue
 
-**Version:** 0.3 | **Status:** Draft for review
+**Version:** 0.4 | **Status:** Active (updated for v0.3 data contract)
 **Depends on:** 00-architecture-overview, 01-schema-vault-design
 **Consumed by:** 03-zotero-sync, 04-pdf-parsing, 05-ai-skills (they implement stages)
 
@@ -56,7 +56,7 @@ Rhizome uses strict single-writer enforcement for all mutating operations:
 ### `studies` table (registry)
 ```sql
 CREATE TABLE studies (
-  siss_id TEXT PRIMARY KEY,
+  rhizome_id TEXT PRIMARY KEY,
   citekey TEXT UNIQUE NOT NULL,
   title TEXT,
   doi TEXT,
@@ -66,6 +66,13 @@ CREATE TABLE studies (
   pipeline_overall TEXT NOT NULL DEFAULT 'not_started',
   pipeline_steps_json TEXT NOT NULL DEFAULT '{}',
   pipeline_error TEXT,
+  -- v0.3 additions
+  zotero_version INTEGER,
+  zotero_sync_status TEXT DEFAULT 'active',
+  zotero_tags_snapshot TEXT,             -- JSON: for future merge logic
+  tombstone BOOLEAN DEFAULT false,
+  tombstone_reason TEXT,
+  tombstone_at TEXT,
   created_at TEXT NOT NULL DEFAULT (datetime('now')),
   updated_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
@@ -76,11 +83,13 @@ CREATE INDEX idx_studies_pmid ON studies(pmid);
 CREATE INDEX idx_studies_zotero ON studies(zotero_key);
 ```
 
+> **v0.3 note:** `siss_id` renamed to `rhizome_id`. Zotero ops fields (`zotero_version`, `zotero_sync_status`) moved from `pipeline_steps_json` to proper columns. Tombstone fields replace the `removed_upstream_*` fields that were previously embedded in step JSON.
+
 ### `jobs` table (queue)
 ```sql
 CREATE TABLE jobs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  siss_id TEXT NOT NULL REFERENCES studies(siss_id),
+  rhizome_id TEXT NOT NULL REFERENCES studies(rhizome_id),
   stage TEXT NOT NULL,                   -- PipelineStep value
   status TEXT NOT NULL DEFAULT 'queued', -- queued | processing | complete | error | paused | skipped
   priority INTEGER NOT NULL DEFAULT 0,  -- higher = sooner
@@ -96,14 +105,14 @@ CREATE TABLE jobs (
 );
 
 CREATE INDEX idx_jobs_status ON jobs(status, priority DESC);
-CREATE INDEX idx_jobs_siss ON jobs(siss_id, stage);
+CREATE INDEX idx_jobs_rhizome ON jobs(rhizome_id, stage);
 ```
 
 ### `job_stage_log` table (audit)
 ```sql
 CREATE TABLE job_stage_log (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  siss_id TEXT NOT NULL REFERENCES studies(siss_id),
+  rhizome_id TEXT NOT NULL REFERENCES studies(rhizome_id),
   stage TEXT NOT NULL,
   status TEXT NOT NULL,                  -- started | completed | failed | skipped
   started_at TEXT,
@@ -112,7 +121,7 @@ CREATE TABLE job_stage_log (
   metadata TEXT                          -- JSON: any stage-specific data
 );
 
-CREATE INDEX idx_log_siss ON job_stage_log(siss_id);
+CREATE INDEX idx_log_rhizome ON job_stage_log(rhizome_id);
 ```
 
 ### `zotero_sync_state` table (Resolves F05)
@@ -138,6 +147,28 @@ CREATE TABLE config_meta (
 -- Stores: config_version, last_migration, db_schema_version
 ```
 
+### `pipeline_runs` table (v0.3 — detailed run history)
+```sql
+CREATE TABLE pipeline_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rhizome_id TEXT NOT NULL REFERENCES studies(rhizome_id),
+  run_id TEXT UNIQUE NOT NULL,
+  step TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  retries INTEGER DEFAULT 0,
+  skip_reason TEXT,
+  error TEXT,
+  model TEXT,
+  skill TEXT
+);
+CREATE INDEX idx_pipeline_runs_study ON pipeline_runs(rhizome_id);
+CREATE INDEX idx_pipeline_runs_run ON pipeline_runs(run_id);
+```
+
+> **v0.3 note:** `pipeline_runs` captures detailed per-step execution history for audit, reprocessing, and skill-version queries. The `pipeline_steps_json` column on `studies` remains as the live pipeline state; `pipeline_runs` is the append-only history. Frontmatter receives only the 6 surface fields (`has_*`, `pipeline_status`, `pipeline_error`, `last_pipeline_run`).
+
 ## 4. Pipeline Orchestrator
 
 ```typescript
@@ -152,7 +183,7 @@ class PipelineOrchestrator {
   async enqueue(record: StudyRecord, options?: { priority?: number }): Promise<void>;
 
   // Requeue a specific stage for existing study
-  async reprocess(sissId: string, stage: PipelineStep, options?: { cascade?: boolean }): Promise<void>;
+  async reprocess(rhizomeId: string, stage: PipelineStep, options?: { cascade?: boolean }): Promise<void>;
 
   // Bulk reprocess by filter
   async bulkReprocess(filter: ReprocessFilter): Promise<{ count: number; dryRun: boolean }>;
@@ -187,6 +218,7 @@ class PipelineOrchestrator {
    → Update job status to 'complete'
    → Update `pipeline_steps_json[stage]`
    → Recompute and persist `pipeline_overall`
+   → Update frontmatter surface fields (`has_*`, `pipeline_status`) on next vault_write
    → Enqueue next stage (if any)
    → Log to job_stage_log
 6. On failure:
@@ -276,26 +308,30 @@ On max retries exceeded: set job status to `paused`, update `pipeline_overall` t
 
 ### Selective Reprocess
 ```bash
-# Rerun summary for one study
-rhizome process --citekey smith2023ashwagandha --stage summarize
+# Rerun summary for one study (compat selector retained)
+rhizome reprocess --citekey smith2023ashwagandha --stage summarize
+
+# Queue all studies missing summaries
+rhizome reprocess --filter "has_summary=false"
 
 # Rerun classifier for studies using old skill version
-rhizome process --stage classify --skill-version-lt 1.3
+rhizome reprocess --stage classify --skill-lt 2.0
 
 # Rerun with cascade (summary reprocess also triggers re-classify)
-rhizome process --stage summarize --skill-version-lt 1.3 --cascade
+rhizome reprocess --stage summarize --skill-lt 1.3 --cascade
 
 # Dry run
-rhizome process --stage summarize --skill-version-lt 1.3 --dry-run
+rhizome reprocess --stage summarize --skill-lt 1.3 --dry-run
 ```
 
 ### Filter Syntax
-Filters query the `studies` table:
-- `--citekey X` — single study
+Filters query the SQLite `studies` + `pipeline_runs` state (not frontmatter):
+- `--citekey X` — single study (compat mode in first build)
 - `--stage X` — which stage to rerun
-- `--skill-version-lt X` — studies where skill version < X
+- `--skill-lt X` — studies where `summary_skill`/`classifier_skill` version part is < X
 - `--collection X` — studies in a specific Zotero collection
-- `--filter "pipeline_overall = 'needs_attention'"` — raw SQL WHERE clause
+- `--filter "has_summary=false"` — queue based on pipeline surface fields
+- `--filter "pipeline_overall = 'needs_attention'"` — advanced raw SQL WHERE clause
 
 ### Cascade Rules
 When `--cascade` is set:

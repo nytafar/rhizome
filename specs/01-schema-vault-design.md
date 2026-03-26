@@ -1,8 +1,9 @@
 # 01 — Schema & Vault Design
 
-**Version:** 0.2 | **Status:** Draft for review
+**Version:** 0.3 | **Status:** Active (contract migration from v0.2)
 **Depends on:** 00-architecture-overview
 **Consumed by:** All other specs (this is the data contract)
+**Migration:** M005 implements the v0.2 → v0.3 contract migration
 
 ---
 
@@ -10,32 +11,35 @@
 
 This spec defines the canonical data shapes, folder conventions, note templates, and Bases views that every other component implements against. Changes here ripple everywhere — this is the foundation.
 
-**Data Authority Principle:** SQLite is the system of record for all machine state. Frontmatter is a read-only projection written by the vault writer stage. Manual frontmatter edits are not read back — all mutations go through the CLI.
+**Data Authority Principle:** SQLite is the system of record for all machine state. Frontmatter is a read-only projection written by the vault writer stage. Manual frontmatter edits are not read back — all mutations go through the CLI. User-managed fields (`user_*`, `tags`, `notes`) are never overwritten by the service.
 
-## 2. Identity Model (Resolves F07)
+## 2. Identity Model
 
 Every study has two identifiers:
 
 | Identifier | Mutability | Purpose |
 |---|---|---|
-| `siss_id` | **Immutable** | UUID, assigned on first ingest. Primary key in SQLite. Never changes. |
-| `citekey` | **Mutable** (rare) | Derived from author+year+title. Used for filenames and human reference. |
+| `rhizome_id` | **Immutable** | UUID, assigned on first ingest. Primary key in SQLite. Never changes. |
+| `citekey` | **Mutable** (rare) | Derived from author+year+title. Used for filenames only — not stored in frontmatter. |
 
-If bibliographic metadata changes (e.g., author correction in Zotero), the citekey *could* change. When it does:
-1. Files are renamed (note + asset directory)
-2. An alias entry is added to `_system/citekey_aliases.json`
-3. Old citekey resolves to new via alias lookup
-4. Obsidian wikilinks break — user is notified to update (or a vault-wide rename is offered)
+**Canonical identifier hierarchy** (for dedup and external lookups):
+1. DOI (global, publisher-assigned)
+2. PMID (biomedical global)
+3. `rhizome_id` (service-generated UUID, always present)
 
-**For MVP:** Citekey is generated once and never changes. The alias system is designed-for but not built.
+Citekey is generated once on ingest using BBT-like logic and used as the filename stem. The alias system for citekey renames is designed-for but not built in MVP.
 
-## 3. StudyRecord Interface
+> **v0.2 → v0.3 migration note:** `siss_id` renamed to `rhizome_id`. `citekey` removed from frontmatter (remains in SQLite for filename derivation and `--citekey` CLI lookups). `rhizome_id` only appears in frontmatter when no DOI or PMID is available.
+
+## 3. StudyRecord Interface (Internal)
+
+This is the **runtime type** used inside the service. It is *not* the frontmatter shape — frontmatter is a projection (see Section 4).
 
 ```typescript
 interface StudyRecord {
   // === Identity ===
-  siss_id: string;                    // UUID, immutable
-  citekey: string;                    // derived, used for filenames
+  rhizome_id: string;                 // UUID, immutable, PK in SQLite
+  citekey: string;                    // derived, used for filenames only
 
   // === Bibliographic (Zotero-authoritative) ===
   title: string;
@@ -47,26 +51,33 @@ interface StudyRecord {
   pmcid?: string;
   isbn?: string;
   abstract?: string;
-  volume?: string;
-  issue?: string;
-  pages?: string;
   url?: string;
-  item_type?: string;               // journalArticle | book | preprint | etc.
+  item_type?: string;                // journalArticle | book | preprint | etc.
 
-  // === Zotero Sync ===
+  // === Zotero Identity (frontmatter-projected) ===
   zotero_key?: string;
-  zotero_version?: number;
-  zotero_sync_status?: "active" | "removed_upstream";  // manual review flow
-  removed_upstream_at?: string;       // ISO date
-  removed_upstream_reason?: string;
+  source_collections?: string[];
 
-  // === Pipeline State (canonical model from spec 00) ===
+  // === Zotero Operational (SQLite-only, not in frontmatter) ===
+  zotero_version?: number;
+  zotero_sync_status?: "active" | "removed_upstream";
+  removed_upstream_at?: string | null;
+  removed_upstream_reason?: string | null;
+
+  // === Pipeline State (SQLite canonical, not in frontmatter) ===
   pipeline_overall: PipelineOverallStatus;
   pipeline_steps: Record<string, PipelineStepState>;
-  pipeline_error?: string;            // most recent unresolved error
-  last_pipeline_run?: string;       // ISO date
+  pipeline_error?: string | null;
+  last_pipeline_run?: string;
 
-  // === Asset Paths (relative to vault root) ===
+  // === Pipeline Surface (frontmatter-projected) ===
+  has_pdf: boolean;
+  has_fulltext: boolean;
+  has_summary: boolean;
+  has_classification: boolean;
+  pipeline_status: "complete" | "partial" | "failed" | "pending";
+
+  // === Asset Paths (internal, used for wikilink generation) ===
   asset_dir?: string;
   pdf_path?: string;
   fulltext_path?: string;
@@ -74,27 +85,20 @@ interface StudyRecord {
 
   // === PDF Metadata ===
   pdf_available: boolean;
-  pdf_source?: string;              // zotero | europepmc | unpaywall | openalex | manual
-
-  // === Fixed Classification (Tier 1) ===
-  // Populated by classifier, see Section 5
-
-  // === Evolving Classification (Tier 2) ===
-  // Populated by classifier, managed by taxonomy system, see Section 6
+  pdf_source?: "zotero" | "europepmc" | "unpaywall" | "openalex" | "manual";
 
   // === AI Provenance ===
-  summary_skill_version?: string;
-  classifier_skill_version?: string;
-  summary_model?: string;
-  classifier_model?: string;
+  summary_skill?: string;             // "default-summarizer@1.2"
+  classifier_skill?: string;          // "nutraceutical-classifier@2.0"
   summary_generated_at?: string;
   classifier_generated_at?: string;
-  taxonomy_provisional?: ProvisionalTaxonomyValue[];
+  summary_versions?: string[];        // wikilink array
+
+  // === Tags (single Obsidian-native field) ===
+  tags?: string[];
 
   // === Source Tracking ===
-  source: string;                   // zotero | bibtex | manual | api
-  source_collections?: string[];
-  source_tags?: string[];
+  source: string;                     // zotero | bibtex | manual | api
   date_added?: string;
 }
 
@@ -111,57 +115,30 @@ interface PipelineStepState {
   skip_reason?: string;
   duration_ms?: number;
 }
-
-interface ProvisionalTaxonomyValue {
-  group: string;
-  value: string;
-  confidence: number;
-  proposed_by: string;
-  logged_at: string;                  // ISO date
-}
 ```
 
-## 4. Frontmatter Schema
+## 4. Frontmatter Schema (Obsidian Projection)
 
-The frontmatter is the serialized form of StudyRecord, written as YAML in the canonical study note. Every property here is validated by a zod schema.
+The frontmatter is a **subset** of StudyRecord, written as YAML. Every property is validated by a Zod schema before disk write. User-managed fields are preserved on re-sync (merge, not overwrite).
 
-### Tier 0: Identity + Pipeline
+### Identity
 ```yaml
-siss_id: "550e8400-e29b-41d4-a716-446655440000"
-citekey: "smith2023ashwagandha"
+rhizome_id: "550e8400-e29b-41d4-a716-446655440000"  # only if no DOI/PMID
 note_type: "study"
-pipeline_overall: "in_progress"
-pipeline_steps:
-  ingest:
-    status: "complete"
-    updated_at: "2026-03-25T17:20:00Z"
-    retries: 0
-  zotero_sync:
-    status: "complete"
-    updated_at: "2026-03-25T17:20:05Z"
-    retries: 0
-  fulltext.marker:
-    status: "complete"
-    updated_at: "2026-03-25T17:21:10Z"
-    retries: 0
-  fulltext.docling:
-    status: "skipped"
-    updated_at: "2026-03-25T17:21:10Z"
-    retries: 0
-    skip_reason: "provider_disabled"
-  summarize:
-    status: "complete"
-    updated_at: "2026-03-25T17:31:00Z"
-    retries: 0
-  classify:
-    status: "pending"
-    updated_at: "2026-03-25T17:31:01Z"
-    retries: 0
+```
+
+### Pipeline Surface
+```yaml
+has_pdf: true
+has_fulltext: true
+has_summary: true
+has_classification: true
+pipeline_status: "complete"    # complete | partial | failed | pending
 pipeline_error: null
 last_pipeline_run: "2026-03-25"
 ```
 
-### Tier 1: Bibliographic
+### Bibliographic
 ```yaml
 title: "Ashwagandha root extract reduces cortisol in chronically stressed adults"
 authors:
@@ -173,39 +150,49 @@ year: 2023
 journal: "Phytomedicine"
 doi: "10.1016/j.phymed.2023.01.012"
 pmid: "37291847"
-volume: "112"
-issue: "4"
-pages: "155-163"
 item_type: "journalArticle"
 ```
 
-### Tier 2: Zotero Sync
+> **Removed from frontmatter (v0.3):** `volume`, `issue`, `pages`. These are low-query fields available via `zotero_key` link. They remain in `StudyRecord` internally and in the Zotero field mapper.
+
+### Zotero
 ```yaml
 zotero_key: "ABC123"
-zotero_version: 42
-zotero_sync_status: "active"
-removed_upstream_at: null
-removed_upstream_reason: null
-source: "zotero"
 source_collections:
   - "Adaptogens"
   - "Clinical Trials"
-source_tags:
-  - "ashwagandha"
-  - "cortisol"
 ```
 
-### Tier 3: Assets
+> **Moved to SQLite (v0.3):** `zotero_version`, `zotero_sync_status`, `source`, `removed_upstream_at`, `removed_upstream_reason`. Sync algorithm reads these from SQLite, not frontmatter.
+
+### Tags
 ```yaml
-asset_dir: "Research/studies/_assets/smith2023ashwagandha/"
-pdf_path: "Research/studies/_assets/smith2023ashwagandha/source.pdf"
+tags:
+  - ashwagandha
+  - cortisol
+  - RCT
+  - my-personal-tag
+```
+
+Single Obsidian-native `tags` field. Zotero-sourced tags are written on **initial ingest only** (no re-sync tag updates). User-added tags are preserved forever. Complex diff-based re-sync is deferred.
+
+> **Removed from frontmatter (v0.3):** `source_tags`, `user_tags`. Merged into single `tags`.
+
+### Assets (wikilinks)
+```yaml
+pdf: "[[Research/studies/_assets/smith2023ashwagandha/source.pdf|PDF]]"
+fulltext: "[[Research/studies/_assets/smith2023ashwagandha/fulltext|Full Text]]"
+summary: "[[Research/studies/_assets/smith2023ashwagandha/summary.current|Summary]]"
+user_note: null
 pdf_available: true
 pdf_source: "unpaywall"
-fulltext_path: "Research/studies/_assets/smith2023ashwagandha/fulltext.md"
-summary_path: "Research/studies/_assets/smith2023ashwagandha/summary.current.md"
 ```
 
-### Tier 4: Fixed Classification (populated by classifier)
+Machine path extraction from wikilinks: `/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/` → group 1 is the path.
+
+> **Removed from frontmatter (v0.3):** `pdf_path`, `fulltext_path`, `summary_path`, `asset_dir` as separate fields. Replaced by wikilink properties that render as clickable links in Obsidian.
+
+### Fixed Classification (Tier 4 — populated by classifier)
 ```yaml
 study_type: "RCT"
 sample_size: 120
@@ -222,7 +209,7 @@ funding_source: "independent"
 conflict_of_interest: false
 ```
 
-### Tier 5: Domain-Specific Classification (populated by classifier)
+### Domain-Specific Classification (Tier 5 — populated by classifier)
 ```yaml
 herb_species:
   - "Withania somnifera"
@@ -242,7 +229,7 @@ adverse_events:
 safety_rating: "good"
 ```
 
-### Tier 6: Evolving Taxonomy (managed by taxonomy system)
+### Evolving Taxonomy (Tier 6 — managed by taxonomy system)
 ```yaml
 therapeutic_areas:
   - "stress"
@@ -255,28 +242,28 @@ indications:
   - "anxiolytic"
 ```
 
-### Tier 7: AI Provenance
+### AI Provenance
 ```yaml
-summary_skill_version: "1.0"
-classifier_skill_version: "1.0"
-summary_model: "claude-opus-4-5"
-classifier_model: "claude-opus-4-5"
+summary_skill: "default-summarizer@1.2"
+classifier_skill: "nutraceutical-classifier@2.0"
 summary_generated_at: "2026-03-25T17:30:00Z"
 classifier_generated_at: "2026-03-25T17:31:00Z"
-taxonomy_provisional:
-  - group: "mechanisms"
-    value: "mitochondrial biogenesis"
-    confidence: 0.72
-    proposed_by: "classifier_v1.0"
-    logged_at: "2026-03-25T17:31:00Z"
+summary_versions:
+  - "[[Research/studies/_assets/smith2023ashwagandha/summary.v1|v1 — default-summarizer@1.0 — 2026-01-10]]"
+  - "[[Research/studies/_assets/smith2023ashwagandha/summary.v2|v2 — default-summarizer@1.1 — 2026-02-15]]"
 ```
 
-### Tier 8: User Space (never machine-written)
+> **Changed (v0.3):** `summary_skill_version` + `summary_model` merged into `summary_skill: "name@version"`. Model stored in SQLite `pipeline_runs` only. `taxonomy_provisional` moved to `_assets/{citekey}/taxonomy_provisional.json`.
+
+### User Space (never machine-written)
 ```yaml
-user_tags: []
-user_rating: 0
+user_rating: null           # 1-5 or null
+user_priority: null         # high | medium | low | null
+user_status: null           # reading | read | flagged | null
 notes: ""
 ```
+
+The service **never overwrites** these fields. On re-sync, existing values are read from the current note and preserved in the merge.
 
 ## 5. Citekey Generation
 
@@ -313,7 +300,9 @@ notes: ""
     │       │   ├── summary.current.md   # latest summary
     │       │   ├── summary.v1.md        # archived version
     │       │   ├── classify.current.json # latest classification output
-    │       │   └── classify.v1.json     # archived version
+    │       │   ├── classify.v1.json     # archived version
+    │       │   ├── taxonomy_provisional.json  # provisional taxonomy (v0.3)
+    │       │   └── pipeline.snapshot.json     # point-in-time pipeline export (v0.3)
     │       └── jones2024curcumin/
     │           └── ...
     │
@@ -332,7 +321,6 @@ notes: ""
         ├── taxonomy.json
         ├── taxonomy_review.md
         ├── taxonomy_log.md
-        ├── citekey_aliases.json        # (future) for citekey renames
         ├── studies.base                # main study database view
         ├── fulltexts.base              # browse extracted full texts
         ├── review-queue.base           # incomplete pipeline, flagged items
@@ -344,7 +332,7 @@ All folder names are configurable in `config.yaml`:
 ```yaml
 vault:
   path: "/path/to/vault"
-  research_root: "Research"           # parent folder for everything
+  research_root: "Research"
   studies_folder: "studies"
   assets_folder: "_assets"
   study_notes_folder: "study-notes"
@@ -358,7 +346,7 @@ vault:
 
 ```markdown
 ---
-{full frontmatter as defined in Section 4}
+{frontmatter as defined in Section 4}
 ---
 
 # {title}
@@ -387,28 +375,27 @@ vault:
 |---|---|---|---|
 | {compound} | {plant_part} | {extraction_type} | {dosage} |
 
-## Assets
-- [[{pdf_path}|PDF]]
-- [[{fulltext_path}|Full Text]]
-- [[{summary_path}|AI Summary]]
+## Links
 - [Open in Zotero](zotero://select/items/{zotero_key})
 
 ## Version History
-| Date | Stage | Skill Version | Model |
-|---|---|---|---|
-| {date} | summary | {v} | {model} |
-| {date} | classify | {v} | {model} |
+| Date | Stage | Skill |
+|---|---|---|
+| {date} | summary | {summary_skill} |
+| {date} | classify | {classifier_skill} |
 ```
+
+> **Changed (v0.3):** Assets section removed from note body — asset links are now wikilink properties in frontmatter (clickable in Obsidian). Version history simplified to `skill` column (model is in SQLite). "Links" section retained for non-wikilink references.
 
 ### Summary Asset (`_assets/{citekey}/summary.current.md`)
 
 ```markdown
 ---
 note_type: study_summary
-study_ref: {citekey}
-skill_version: "1.0"
-model: "claude-opus-4-5"
+study_citekey: {citekey}
+skill: "default-summarizer@1.2"
 generated_at: "2026-03-25T17:30:00Z"
+source: "fulltext"
 ---
 
 ## TL;DR
@@ -453,29 +440,14 @@ properties:
   - therapeutic_areas
   - outcome_direction
   - evidence_quality
-  - pipeline_overall
-  - zotero_sync_status
-  - pdf_available
-  - summary_path
-  - fulltext_path
+  - pipeline_status
+  - has_summary
+  - has_pdf
+  - pdf
+  - summary
+  - tags
 sort:
   - property: year
-    order: desc
-```
-
-### `fulltexts.base` — Browse Full Texts
-```yaml
-source:
-  type: folder
-  folder: Research/studies/_assets
-filters:
-  - file.name contains "fulltext"
-properties:
-  - file.name
-  - file.folder
-  - file.size
-sort:
-  - property: file.mtime
     order: desc
 ```
 
@@ -487,20 +459,20 @@ source:
 filters:
   - note_type = "study"
   - or:
-    - pipeline_overall = "needs_attention"
-    - pipeline_steps.classify.status = "pending"
-    - pdf_available = false
-    - zotero_sync_status = "removed_upstream"
-    - taxonomy_provisional != null
+    - pipeline_status = "failed"
+    - pipeline_status = "partial"
+    - has_summary = false
+    - has_pdf = false
 properties:
   - title
-  - pipeline_overall
-  - zotero_sync_status
+  - pipeline_status
   - pipeline_error
-  - pdf_available
+  - has_pdf
+  - has_summary
+  - has_classification
 ```
 
-**Note:** Bases syntax will be validated against actual Obsidian Bases capabilities during implementation. The above is conceptual — exact filter/property syntax may need adjustment.
+> **Changed (v0.3):** Bases use `pipeline_status` and `has_*` booleans instead of nested `pipeline_steps` and `zotero_sync_status`.
 
 ## 9. Versioning Strategy
 
@@ -508,81 +480,196 @@ properties:
 - Active: `_assets/{citekey}/summary.current.md`
 - Archive: `_assets/{citekey}/summary.v{n}.md`
 - On reprocess: current is copied to `summary.v{n}.md`, new output replaces `summary.current.md`
-- Study note always links to `summary.current.md`
+- Study note frontmatter `summary_versions` array tracks history as wikilinks
+- Study note always links to `summary.current` via `summary` wikilink property
 
 ### Classifications
 - Active: frontmatter on canonical study note + `_assets/{citekey}/classify.current.json`
 - Archive: `_assets/{citekey}/classify.v{n}.json`
-- JSON contains the full classifier output including confidence scores
-- Frontmatter contains only the final accepted values (no confidence scores)
+- Frontmatter contains only accepted values (no confidence scores)
+
+### Provisional Taxonomy
+- Written to: `_assets/{citekey}/taxonomy_provisional.json`
+- Read by: `TaxonomyCurator` for review/promote workflows
+- Not in frontmatter (v0.3)
+
+### Pipeline Snapshot
+- Written once on pipeline completion: `_assets/{citekey}/pipeline.snapshot.json`
+- Point-in-time export of final pipeline run for portability/export
+- Not a live document — service reads from SQLite, not this file
 
 ### Version Numbering
 - Sequential integer per study per artifact type
-- Tracked in SQLite `job_stage_log` table
+- Tracked in SQLite `pipeline_runs` table
 - Version N means "the Nth time this stage ran for this study"
 
 ## 10. Linking Strategy
 
-### Wikilinks
-- Study note → assets: `[[Research/studies/_assets/{citekey}/source.pdf|PDF]]`
-- Study note → summary: `[[Research/studies/_assets/{citekey}/summary.current|AI Summary]]`
-- User note → study: `[[Research/studies/{citekey}]]`
-- Embeds: `![[...summary.current#TL;DR]]` for section transclusion
+### Wikilink Properties (frontmatter)
+- `pdf`: `[[Research/studies/_assets/{citekey}/source.pdf|PDF]]`
+- `fulltext`: `[[Research/studies/_assets/{citekey}/fulltext|Full Text]]`
+- `summary`: `[[Research/studies/_assets/{citekey}/summary.current|Summary]]`
+- `user_note`: `[[Research/study-notes/{citekey}.note|Notes]]` (or null)
 
-### Frontmatter Path Properties
-- `pdf_path`, `fulltext_path`, `summary_path` are relative to vault root
-- These are the machine-readable links; wikilinks in note body are the human-readable links
-- Both are kept in sync by the vault writer
+These render as clickable links in Obsidian and are the canonical asset reference.
+
+### Machine Path Extraction
+When service code needs the raw path from a wikilink property:
+```typescript
+function extractWikilinkPath(wikilink: string): string | null {
+  const match = wikilink.match(/\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/);
+  return match?.[1] ?? null;
+}
+```
+
+### Embeds
+- `![[...summary.current#TL;DR]]` for section transclusion in study note body
 
 ### Backlinks
 - Obsidian's native backlinks panel shows all notes linking to a study
-- No automated reverse-link indexing in MVP (rely on native Obsidian)
-- Future: periodic indexer that computes `related_note_count` etc.
+- No automated reverse-link indexing in MVP
 
 ## 11. Zod Validation Schema
 
-Every frontmatter write is validated against a zod schema before writing to disk. Schema covers:
-- Required fields per pipeline step (e.g., after `zotero_sync`, `zotero_key` must be present)
-- Value constraints (year > 1900, `pipeline_overall` in enum, per-step status in enum, confidence in `0..1`, etc.)
-- Type safety (arrays are arrays, numbers are numbers)
+Every frontmatter write is validated against a Zod schema before writing to disk.
 
 ```typescript
 const StudyFrontmatterSchema = z.object({
-  siss_id: z.string().uuid(),
-  citekey: z.string().min(1),
+  // Identity
+  rhizome_id: z.string().uuid().optional(),  // only if no DOI/PMID
   note_type: z.literal("study"),
-  pipeline_overall: z.nativeEnum(PipelineOverallStatus),
-  pipeline_steps: z.record(PipelineStepStateSchema),
-  // ... etc for all fields
+
+  // Pipeline surface
+  has_pdf: z.boolean(),
+  has_fulltext: z.boolean(),
+  has_summary: z.boolean(),
+  has_classification: z.boolean(),
+  pipeline_status: z.enum(["complete", "partial", "failed", "pending"]),
+  pipeline_error: z.string().nullable(),
+  last_pipeline_run: z.string().optional(),  // ISO date
+
+  // Bibliographic
+  title: z.string().min(1),
+  authors: z.array(AuthorSchema).min(1),
+  year: z.number().int().gt(1900),
+  journal: z.string().optional(),
+  doi: z.string().optional(),
+  pmid: z.string().optional(),
+  item_type: z.string().optional(),
+
+  // Zotero
+  zotero_key: z.string().optional(),
+  source_collections: z.array(z.string()).optional(),
+
+  // Tags
+  tags: z.array(z.string()).optional(),
+
+  // Assets (wikilinks)
+  pdf: z.string().optional(),
+  fulltext: z.string().optional(),
+  summary: z.string().optional(),
+  user_note: z.string().nullable().optional(),
+  pdf_available: z.boolean(),
+  pdf_source: z.enum(["zotero", "europepmc", "unpaywall", "openalex", "manual"]).optional(),
+
+  // Classification fields (Tiers 4-6) — added by classifier, omitted here for brevity
+
+  // AI Provenance
+  summary_skill: z.string().optional(),
+  classifier_skill: z.string().optional(),
+  summary_generated_at: z.string().optional(),
+  classifier_generated_at: z.string().optional(),
+  summary_versions: z.array(z.string()).optional(),
+
+  // User fields (never overwritten by service)
+  user_rating: z.number().int().min(1).max(5).nullable().optional(),
+  user_priority: z.enum(["high", "medium", "low"]).nullable().optional(),
+  user_status: z.enum(["reading", "read", "flagged"]).nullable().optional(),
+  notes: z.string().optional(),
 });
 ```
 
-This schema is the single source of truth and is shared between:
-- Vault writer (validates before writing)
-- CLI status display (parses and validates frontmatter)
-- AI skills (classifier JSON schema mirrors this)
+Schema enforces:
+- Value constraints (year > 1900, pipeline_status in enum, etc.)
+- Type safety (arrays are arrays, numbers are numbers)
+- User fields use `.optional()` + `.nullable()` — service emits defaults on first write, preserves existing values on re-sync
 
-## 12. Implementation Steps
+## 12. SQLite Schema (v0.3 additions)
 
-### Step 1 (Phase 1): Minimal Schema
-- Define `StudyRecord` with identity + bibliographic + pipeline fields only
-- Define `PipelineOverallStatus`, `PipelineStepStatus`, and `JobStatus` enums
-- Create zod schema for frontmatter (Tiers 0-3 only)
-- Implement note template generator (simple version without classification sections)
-- Implement folder creator (`rhizome init` creates directory structure)
+### `studies` table changes
+```sql
+-- v0.3: rename siss_id → rhizome_id, add Zotero ops columns, add tombstone
+ALTER TABLE studies RENAME COLUMN siss_id TO rhizome_id;
+ALTER TABLE studies ADD COLUMN zotero_version INTEGER;
+ALTER TABLE studies ADD COLUMN zotero_sync_status TEXT DEFAULT 'active';
+ALTER TABLE studies ADD COLUMN zotero_tags_snapshot TEXT;  -- JSON, for future merge logic
+ALTER TABLE studies ADD COLUMN tombstone BOOLEAN DEFAULT false;
+ALTER TABLE studies ADD COLUMN tombstone_reason TEXT;
+ALTER TABLE studies ADD COLUMN tombstone_at TEXT;
+```
 
-### Step 2 (Phase 2): Add Asset Paths
-- Extend schema with asset paths
-- Implement asset directory creation
-- Update note template with asset links
+### New `pipeline_runs` table
+```sql
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  rhizome_id TEXT NOT NULL REFERENCES studies(rhizome_id),
+  run_id TEXT UNIQUE NOT NULL,
+  step TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at TEXT,
+  completed_at TEXT,
+  retries INTEGER DEFAULT 0,
+  skip_reason TEXT,
+  error TEXT,
+  model TEXT,
+  skill TEXT
+);
+CREATE INDEX idx_pipeline_runs_study ON pipeline_runs(rhizome_id);
+CREATE INDEX idx_pipeline_runs_run ON pipeline_runs(run_id);
+```
 
-### Step 3 (Phase 3-4): Full Classification Schema
-- Extend schema with Tier 4-7 fields
-- Extend note template with classification sections
-- Implement Bases view generators
+### Foreign key updates
+All `REFERENCES studies(siss_id)` become `REFERENCES studies(rhizome_id)` in `jobs` and `job_stage_log` tables.
+
+## 13. Vault Writer Merge Strategy
+
+The vault writer follows a **merge-on-write** pattern:
+
+1. **First write** (no existing file): Generate full frontmatter with service defaults for user fields (`null`/empty)
+2. **Re-sync** (file exists): Read existing frontmatter, preserve user-managed keys (`tags`, `user_*`, `notes`, `user_note`), overwrite machine-managed keys
+3. **Corrupted frontmatter**: If existing file can't be parsed, write fresh and log warning
+
+User-managed fields:
+- `tags` — written once on ingest, never overwritten
+- `user_rating`, `user_priority`, `user_status`, `notes`, `user_note` — never written by service
+
+Machine-managed fields: everything else. These are overwritten from `StudyRecord` state on every vault write.
+
+## 14. Implementation Steps
+
+### Step 1 (M005): Contract Migration
+- Rename `siss_id` → `rhizome_id` across codebase
+- Split `StudyRecord` (internal) from `StudyFrontmatter` (projection)
+- SQLite migration v2 (column renames, new tables, Zotero ops columns)
+- Rewrite note-builder frontmatter projection
+- Implement merge-on-write vault writer
+- Update all test fixtures and snapshots
+
+### Step 2 (M002): PDF + Fulltext
+- Asset wikilink properties populated by PDF fetch / marker stages
+
+### Step 3 (M003): Production AI + Versioning
+- `summary_versions` rotation logic
+- `pipeline.snapshot.json` export
+- Reprocessing with `--skill-lt`
+
+### Step 4 (M004): Classification + Taxonomy
+- Tier 4-6 fields populated by classifier
+- `taxonomy_provisional.json` written by classifier
+- Full Zod schema with classification fields
 
 ### Testing Strategy
 - Fixtures: sample StudyRecord objects for each pipeline stage
 - Snapshot tests: generated markdown compared against known-good output
-- Zod validation tests: valid and invalid frontmatter examples
-- Round-trip tests: write note → read note → compare with original StudyRecord
+- Zod validation tests: valid and invalid frontmatter for v0.3 shape
+- Merge tests: existing file with user edits survives re-sync
