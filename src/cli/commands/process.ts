@@ -32,6 +32,12 @@ interface VaultWriteStudyRow {
   title: string | null;
   doi: string | null;
   pmid: string | null;
+  zotero_key: string | null;
+  zotero_version: number | null;
+  zotero_sync_status: string | null;
+  removed_upstream_at: string | null;
+  removed_upstream_reason: string | null;
+  source_collections_json: string | null;
   source: string;
   pipeline_overall: string;
   pipeline_error: string | null;
@@ -131,6 +137,19 @@ function parseStringArray(value: unknown): string[] | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function parseStringArrayJson(value: string | null | undefined): string[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parseStringArray(parsed);
+  } catch {
+    return undefined;
+  }
+}
+
 function extractSummaryPathFromJobMetadata(
   db: BunSQLiteDatabase,
   rhizomeId: string,
@@ -172,6 +191,27 @@ function extractSummaryPathFromJobMetadata(
   }
 }
 
+function findLastPipelineRunDate(db: BunSQLiteDatabase, rhizomeId: string): string | undefined {
+  const row = db
+    .query(
+      `
+      SELECT completed_at, started_at
+      FROM pipeline_runs
+      WHERE rhizome_id = ?
+      ORDER BY id DESC
+      LIMIT 1;
+      `,
+    )
+    .get(rhizomeId) as { completed_at: string | null; started_at: string | null } | null;
+
+  const candidate = row?.completed_at ?? row?.started_at;
+  if (!candidate || candidate.length < 10) {
+    return undefined;
+  }
+
+  return candidate.slice(0, 10);
+}
+
 function normalizePipelineOverall(value: string): PipelineOverallStatus {
   if (Object.values(PipelineOverallStatus).includes(value as PipelineOverallStatus)) {
     return value as PipelineOverallStatus;
@@ -195,6 +235,12 @@ function loadStudyForVaultWrite(params: {
         title,
         doi,
         pmid,
+        zotero_key,
+        zotero_version,
+        zotero_sync_status,
+        removed_upstream_at,
+        removed_upstream_reason,
+        source_collections_json,
         source,
         pipeline_overall,
         pipeline_error,
@@ -211,8 +257,9 @@ function loadStudyForVaultWrite(params: {
   }
 
   const pipelineSteps = parsePipelineSteps(row.pipeline_steps_json);
-  const zoteroSyncStep = pipelineSteps[PipelineStep.ZOTERO_SYNC] as Record<string, unknown> | undefined;
   const summaryPath = extractSummaryPathFromJobMetadata(params.db, row.rhizome_id, params.config.vault.path);
+  const lastPipelineRun =
+    findLastPipelineRunDate(params.db, row.rhizome_id) ?? params.now().toISOString().slice(0, 10);
 
   return {
     siss_id: row.rhizome_id,
@@ -223,27 +270,20 @@ function loadStudyForVaultWrite(params: {
     year: params.now().getUTCFullYear(),
     doi: row.doi ?? undefined,
     pmid: row.pmid ?? undefined,
-    zotero_key: typeof zoteroSyncStep?.zotero_key === "string" ? zoteroSyncStep.zotero_key : undefined,
-    zotero_version:
-      typeof zoteroSyncStep?.zotero_version === "number" ? zoteroSyncStep.zotero_version : undefined,
+    zotero_key: row.zotero_key ?? undefined,
+    zotero_version: row.zotero_version ?? undefined,
     zotero_sync_status:
-      zoteroSyncStep?.zotero_sync_status === "removed_upstream" ? "removed_upstream" : "active",
-    removed_upstream_at:
-      typeof zoteroSyncStep?.removed_upstream_at === "string"
-        ? zoteroSyncStep.removed_upstream_at
-        : null,
-    removed_upstream_reason:
-      typeof zoteroSyncStep?.removed_upstream_reason === "string"
-        ? zoteroSyncStep.removed_upstream_reason
-        : null,
+      row.zotero_sync_status === "removed_upstream" ? "removed_upstream" : "active",
+    removed_upstream_at: row.removed_upstream_at ?? null,
+    removed_upstream_reason: row.removed_upstream_reason ?? null,
     pipeline_overall: normalizePipelineOverall(row.pipeline_overall),
     pipeline_steps: pipelineSteps,
     pipeline_error: row.pipeline_error,
     source: row.source,
-    source_collections: parseStringArray(zoteroSyncStep?.source_collections),
+    source_collections: parseStringArrayJson(row.source_collections_json),
     summary_path: summaryPath,
     pdf_available: false,
-    last_pipeline_run: params.now().toISOString().slice(0, 10),
+    last_pipeline_run: lastPipelineRun,
   };
 }
 
