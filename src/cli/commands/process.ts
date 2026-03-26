@@ -1,5 +1,6 @@
 import { join, relative } from "node:path";
 import { loadConfig, type RhizomeConfig } from "../../config/loader";
+import { resolveWorkspaceConfigPath } from "../../config/workspace-contract";
 import { Database } from "../../db/database";
 import { WriterLock, WriterLockError } from "../../lock/writer-lock";
 import {
@@ -358,7 +359,7 @@ export async function runProcessCommand(
   const cwd = deps.cwd ?? process.cwd();
   const stdout = deps.stdout ?? process.stdout;
 
-  const configPath = join(cwd, ".siss", "config.yaml");
+  const configPath = await resolveWorkspaceConfigPath(cwd);
   const config = await (deps.loadConfigFn ?? loadConfig)(configPath);
 
   const database = new Database({ path: resolveDbPath(cwd, config) });

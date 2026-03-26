@@ -1,6 +1,7 @@
 import { rm } from "node:fs/promises";
 import { join } from "node:path";
 import { loadConfig, type RhizomeConfig } from "../../config/loader";
+import { resolveWorkspaceConfigPath } from "../../config/workspace-contract";
 import { WriterLock } from "../../lock/writer-lock";
 
 export interface LockStatusCommandOptions {
@@ -43,7 +44,7 @@ async function readLock(cwd: string, deps: LockCommandDeps): Promise<{
   lock: WriterLock;
   lockPath: string;
 }> {
-  const configPath = join(cwd, ".siss", "config.yaml");
+  const configPath = await resolveWorkspaceConfigPath(cwd);
   const config = await (deps.loadConfigFn ?? loadConfig)(configPath);
   const lockPath = resolveLockPath(cwd, config);
 

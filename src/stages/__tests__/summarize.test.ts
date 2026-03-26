@@ -59,7 +59,7 @@ describe("runSummarizeStage", () => {
         abstract: "Abstract body.",
       },
       assetsRootDir: join(root, "_assets"),
-      skillsDir: ".rhizome/skills",
+      skillsDir: ".siss/skills",
       summarizerSkillFile: "summarizer.md",
       skillVersion: "1.0",
       model: "claude-sonnet-4",
@@ -83,7 +83,7 @@ describe("runSummarizeStage", () => {
     expect(result.metadata.stage).toBe(PipelineStep.SUMMARIZE);
     expect(result.metadata.usedFulltext).toBe(false);
 
-    expect(captured.systemPromptFile).toBe(".rhizome/skills/summarizer.md");
+    expect(captured.systemPromptFile).toBe(".siss/skills/summarizer.md");
     expect(captured.input).toContain("# Study Metadata");
     expect(captured.input).toContain("# Abstract");
     expect(captured.input).not.toContain("# Full Text");
@@ -126,7 +126,7 @@ describe("runSummarizeStage", () => {
       },
       fulltextMarkdown: "# Body\nDetailed full text.",
       assetsRootDir: join(root, "_assets"),
-      skillsDir: ".rhizome/skills",
+      skillsDir: ".siss/skills",
       summarizerSkillFile: "summarizer.md",
       skillVersion: "1.0",
       model: "claude-opus-4-5",

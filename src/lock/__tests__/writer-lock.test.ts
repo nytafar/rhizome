@@ -6,7 +6,7 @@ import { WriterLock, WriterLockError } from "../writer-lock";
 
 async function withTempLockPath<T>(run: (lockPath: string) => Promise<T> | T): Promise<T> {
   const dir = await mkdtemp(join(tmpdir(), "rhizome-lock-"));
-  const lockPath = join(dir, ".rhizome", "locks", "mutator.lock");
+  const lockPath = join(dir, ".siss", "locks", "mutator.lock");
 
   try {
     return await run(lockPath);
@@ -107,5 +107,21 @@ describe("WriterLock", () => {
         stale: false,
       } satisfies Partial<WriterLockError>);
     });
+  });
+
+  test("supports explicit legacy lock path override for compatibility", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "rhizome-lock-legacy-"));
+    const lockPath = join(dir, ".rhizome", "locks", "mutator.lock");
+
+    try {
+      const lock = new WriterLock({ lockPath });
+      await lock.acquire("rhizome process", 8080);
+
+      const metadata = await lock.readMetadata();
+      expect(metadata?.pid).toBe(8080);
+      expect(metadata?.command).toBe("rhizome process");
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
 });

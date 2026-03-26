@@ -140,4 +140,26 @@ describe("CLI command handlers", () => {
       expect(result.result.failed).toBe(0);
     });
   });
+
+  test("lock status resolves legacy .rhizome workspace config when canonical config is absent", async () => {
+    await withTempRhizome(async (root) => {
+      const canonicalConfigPath = join(root, ".siss", "config.yaml");
+      const legacyConfigPath = join(root, ".rhizome", "config.yaml");
+
+      const canonicalConfig = await Bun.file(canonicalConfigPath).text();
+      const legacyConfig = canonicalConfig
+        .replaceAll(".siss/locks/mutator.lock", ".rhizome/locks/mutator.lock")
+        .replaceAll(".siss/siss.db", ".rhizome/siss.db")
+        .replaceAll(".siss/skills/", ".rhizome/skills/");
+
+      await mkdir(join(root, ".rhizome", "locks"), { recursive: true });
+      await mkdir(join(root, ".rhizome", "skills"), { recursive: true });
+      await Bun.write(legacyConfigPath, legacyConfig);
+      await rm(canonicalConfigPath, { force: true });
+
+      const status = await runLockStatusCommand({ json: true }, { cwd: root });
+      expect(status.lockPath).toBe(join(root, ".rhizome", "locks", "mutator.lock"));
+      expect(status.active).toBe(false);
+    });
+  });
 });
