@@ -1,14 +1,5 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
-<<<<<<< HEAD
-exports[`summaryJsonToMarkdown renders summarizer JSON output and metadata into markdown 1`] = `
-"---
-note_type: study_summary
-study_ref: smith2023ashwagandha
-skill_version: "1.0"
-model: "claude-opus-4-5"
-generated_at: "2026-03-25T17:30:00Z"
-=======
 exports[`summaryJsonToMarkdown converts summarizer JSON and metadata into canonical summary markdown 1`] = `
 "---
 note_type: study_summary
@@ -16,36 +7,10 @@ study_ref: doe2024curcumin
 skill_version: "1.1"
 model: "claude-opus-4-5"
 generated_at: "2026-03-25T22:30:00Z"
->>>>>>> milestone/M001
 source: "fulltext"
 ---
 
 ## TL;DR
-<<<<<<< HEAD
-Ashwagandha reduced cortisol and improved sleep quality over 8 weeks.
-
-## Background & Rationale
-Chronic stress remains under-treated in working-age adults.
-
-## Methods
-Double-blind RCT, n=120 adults, 600 mg/day root extract vs placebo.
-
-## Key Findings
-Cortisol dropped 18% vs 3% (p<0.01), PSQI improved by 2.1 points.
-
-## Clinical / Practical Relevance
-Supports a standardized root-extract option for moderate stress symptoms.
-
-## Limitations
-Single center, short duration, self-reported sleep endpoint.
-
-## Compounds & Doses
-- **Withania somnifera root extract**: 600 mg/day once daily for 8 weeks
-- **Withanolides**: 5% standardized for unspecified
-
-## Open Questions
-Does efficacy persist beyond 12 weeks and in older populations?
-=======
 Curcumin improved pain and function over placebo in 12 weeks.
 
 ## Background & Rationale
@@ -69,24 +34,11 @@ Single-center trial and short follow-up limit long-term generalizability.
 
 ## Open Questions
 Whether effects persist beyond 12 weeks and in multi-center populations.
->>>>>>> milestone/M001
 
 ## Structured Extraction
 \`\`\`json
 {
   "herb_species": [
-<<<<<<< HEAD
-    "Withania somnifera"
-  ],
-  "common_names": [
-    "ashwagandha"
-  ],
-  "active_compounds": [
-    "withanolides"
-  ],
-  "plant_parts": [
-    "root"
-=======
     "Curcuma longa"
   ],
   "common_names": [
@@ -98,35 +50,20 @@ Whether effects persist beyond 12 weeks and in multi-center populations.
   ],
   "plant_parts": [
     "rhizome"
->>>>>>> milestone/M001
   ],
   "extraction_types": [
     "ethanolic"
   ],
   "dosages": [
-<<<<<<< HEAD
-    "600 mg/day"
-=======
     "500 mg BID"
->>>>>>> milestone/M001
   ],
   "adverse_events": [
     "mild GI discomfort"
   ],
-<<<<<<< HEAD
-  "study_type": "randomized controlled trial",
-  "sample_size": 120,
-  "duration": "8 weeks",
-  "population": "Adults with chronic stress"
-}
-\`\`\`
-"
-=======
   "study_type": "RCT",
   "sample_size": 84,
   "duration": "12 weeks",
   "population": "Adults with knee osteoarthritis"
 }
 \`\`\`"
->>>>>>> milestone/M001
 `;

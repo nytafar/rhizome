@@ -12,8 +12,6 @@ export * from "./lock/writer-lock";
 export * from "./pipeline/orchestrator";
 export * from "./ai/executor";
 export * from "./ai/summary-converter";
-<<<<<<< HEAD
-=======
 export * from "./stages/summarize";
 export {
   runVaultWriteStage,
@@ -23,4 +21,3 @@ export {
 } from "./stages/vault-write";
 export * from "./zotero/sync";
 export * from "./vault/note-builder";
->>>>>>> milestone/M001
