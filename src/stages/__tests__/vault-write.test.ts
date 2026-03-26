@@ -204,6 +204,55 @@ describe("runVaultWriteStage", () => {
 
     database.close();
   });
+  test("preserves user-managed frontmatter fields when existing frontmatter is provided", async () => {
+    const root = await makeTempDir("rhizome-vault-write-");
+    const dbPath = join(root, "rhizome.sqlite");
+
+    const database = new Database({ path: dbPath });
+    database.init();
+
+    const study = buildStudyFixture();
+
+    database.db
+      .query(
+        `
+        INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+        VALUES (?, ?, ?, ?, ?, ?);
+        `,
+      )
+      .run(
+        study.rhizome_id,
+        study.citekey,
+        study.source,
+        study.title,
+        study.pipeline_overall,
+        JSON.stringify(study.pipeline_steps),
+      );
+
+    const result = await runVaultWriteStage({
+      db: database.db,
+      study,
+      existingFrontmatter: {
+        tags: ["manual-tag"],
+        user_rating: 4,
+        user_status: "reading",
+        notes: "keep me",
+      },
+      vaultPath: root,
+      vault: VAULT_CONFIG,
+      now: () => new Date("2026-03-25T22:56:00.000Z"),
+    });
+
+    const parsedMatter = matter(await readFile(result.notePath, "utf8"));
+    const frontmatter = parseStudyFrontmatter(parsedMatter.data);
+
+    expect(frontmatter.tags).toEqual(["manual-tag"]);
+    expect(frontmatter.user_rating).toBe(4);
+    expect(frontmatter.user_status).toBe("reading");
+    expect(frontmatter.notes).toBe("keep me");
+
+    database.close();
+  });
 });
 
 describe("stageHandlerRegistry", () => {

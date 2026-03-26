@@ -11,6 +11,18 @@ import type {
 
 const UNAVAILABLE = "—";
 
+export const USER_PRESERVED_FRONTMATTER_KEYS = [
+  "tags",
+  "user_rating",
+  "user_priority",
+  "user_status",
+  "user_note",
+  "notes",
+] as const;
+
+export type UserPreservedFrontmatterKey =
+  (typeof USER_PRESERVED_FRONTMATTER_KEYS)[number];
+
 function cleanUndefinedDeep<T>(value: T): T {
   if (Array.isArray(value)) {
     return value.map((item) => cleanUndefinedDeep(item)) as T;
@@ -174,7 +186,52 @@ function buildSummaryVersions(study: StudyRecord): string[] | undefined {
   return [formatWikilink(study.summary_path, "current")];
 }
 
-function buildStudyFrontmatter(study: StudyRecord): StudyFrontmatterProjection {
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+export function mergeFrontmatterProjection(params: {
+  machine: StudyFrontmatterProjection;
+  existing?: Partial<StudyFrontmatterProjection>;
+}): StudyFrontmatterProjection {
+  const { machine, existing } = params;
+
+  if (!existing) {
+    return machine;
+  }
+
+  const merged: StudyFrontmatterProjection = {
+    ...machine,
+  };
+
+  if (isStringArray(existing.tags)) {
+    merged.tags = [...existing.tags];
+  }
+
+  if ("user_rating" in existing) {
+    merged.user_rating = existing.user_rating;
+  }
+
+  if ("user_priority" in existing) {
+    merged.user_priority = existing.user_priority;
+  }
+
+  if ("user_status" in existing) {
+    merged.user_status = existing.user_status;
+  }
+
+  if ("user_note" in existing) {
+    merged.user_note = existing.user_note;
+  }
+
+  if ("notes" in existing) {
+    merged.notes = existing.notes;
+  }
+
+  return cleanUndefinedDeep(merged);
+}
+
+export function buildStudyFrontmatterProjection(study: StudyRecord): StudyFrontmatterProjection {
   const includeRhizomeIdentity = !study.doi && !study.pmid;
   const rhizomeIdentity = includeRhizomeIdentity
     ? resolveFrontmatterIdentity(study)
@@ -228,7 +285,10 @@ function buildStudyFrontmatter(study: StudyRecord): StudyFrontmatterProjection {
   });
 }
 
-export function buildStudyNoteMarkdown(study: StudyRecord): string {
+export function buildStudyNoteMarkdown(
+  study: StudyRecord,
+  existingFrontmatter?: Partial<StudyFrontmatterProjection>,
+): string {
   const zoteroLink = study.zotero_key
     ? `[Open in Zotero](zotero://select/items/${study.zotero_key})`
     : "_Not available_";
@@ -252,5 +312,11 @@ export function buildStudyNoteMarkdown(study: StudyRecord): string {
     "",
   ].join("\n");
 
-  return matter.stringify(content, buildStudyFrontmatter(study));
+  const machineFrontmatter = buildStudyFrontmatterProjection(study);
+  const finalFrontmatter = mergeFrontmatterProjection({
+    machine: machineFrontmatter,
+    existing: existingFrontmatter,
+  });
+
+  return matter.stringify(content, finalFrontmatter);
 }

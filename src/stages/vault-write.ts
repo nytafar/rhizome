@@ -8,7 +8,7 @@ import {
   PipelineStepStatus,
   type PipelineStepState,
 } from "../types/pipeline";
-import type { StudyRecord } from "../types/study";
+import type { StudyRecord, StudyFrontmatterProjection } from "../types/study";
 import { buildStudyNoteMarkdown } from "../vault/note-builder";
 
 interface VaultPathsConfig {
@@ -20,6 +20,7 @@ interface VaultPathsConfig {
 export interface VaultWriteStageInput {
   db: BunSQLiteDatabase;
   study: StudyRecord;
+  existingFrontmatter?: Partial<StudyFrontmatterProjection>;
   vaultPath: string;
   vault: VaultPathsConfig;
   now?: () => Date;
@@ -146,7 +147,7 @@ export async function runVaultWriteStage(
     asset_dir: `${assetDirRelative}/`,
   };
 
-  const markdown = buildStudyNoteMarkdown(studyWithAssetDir);
+  const markdown = buildStudyNoteMarkdown(studyWithAssetDir, input.existingFrontmatter);
   const parsedMatter = matter(markdown);
   const frontmatter = parseStudyFrontmatter(parsedMatter.data);
 
