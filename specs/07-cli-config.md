@@ -379,7 +379,7 @@ rhizome status --json
 
 rhizome status --citekey smith2023ashwa --json
 # {
-#   "siss_id": "...",
+#   "rhizome_id": "...",
 #   "citekey": "...",
 #   "pipeline_overall": "in_progress",
 #   "pipeline_steps": {

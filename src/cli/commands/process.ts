@@ -47,6 +47,7 @@ interface VaultWriteStudyRow {
 export interface ProcessCommandOptions {
   ai?: boolean;
   batch?: number;
+  citekey?: string;
 }
 
 export interface ProcessCommandResult {
@@ -90,7 +91,34 @@ function buildCommandLabel(options: ProcessCommandOptions): string {
   if (typeof options.batch === "number") {
     parts.push(`--batch ${options.batch}`);
   }
+  if (typeof options.citekey === "string" && options.citekey.trim().length > 0) {
+    parts.push(`--citekey ${options.citekey.trim()}`);
+  }
   return parts.join(" ");
+}
+
+function resolveRhizomeIdByCitekey(db: BunSQLiteDatabase, citekey: string): string {
+  const normalized = citekey.trim();
+  if (normalized.length === 0) {
+    throw new Error("--citekey requires a non-empty value");
+  }
+
+  const row = db
+    .query(
+      `
+      SELECT rhizome_id
+      FROM studies
+      WHERE citekey = ?
+      LIMIT 1;
+      `,
+    )
+    .get(normalized) as { rhizome_id: string } | null;
+
+  if (!row) {
+    throw new Error(`Study not found for citekey=${normalized}`);
+  }
+
+  return row.rhizome_id;
 }
 
 function loadStudyForSummarize(db: BunSQLiteDatabase, rhizomeId: string): SummarizeStudyRow {
@@ -427,8 +455,14 @@ export async function runProcessCommand(
   }
 
   try {
+    const targetRhizomeId =
+      typeof options.citekey === "string" && options.citekey.trim().length > 0
+        ? resolveRhizomeIdByCitekey(database.db, options.citekey)
+        : undefined;
+
     const orchestrator = new PipelineOrchestrator({
       db: database.db,
+      targetRhizomeId,
       onEvent: deps.onEvent,
     });
 

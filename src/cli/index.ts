@@ -53,6 +53,7 @@ export function createCliProgram(): Command {
     .description("Run pipeline processing")
     .option("--ai", "Run AI-required stages")
     .option("--batch <n>", "Maximum jobs to process", (value) => Number.parseInt(value, 10))
+    .option("--citekey <key>", "Process jobs for a specific study only")
     .action(async (options: ProcessCommandOptions) => {
       await runProcessCommand(options);
     });

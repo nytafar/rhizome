@@ -46,6 +46,7 @@ export interface PipelineOrchestratorOptions {
   handlers?: Partial<Record<PipelineStep, StageHandler>>;
   stageSequence?: PipelineStep[];
   aiStages?: Set<PipelineStep>;
+  targetRhizomeId?: string;
   now?: () => Date;
   onEvent?: (event: PipelineOrchestratorEvent) => void;
 }
@@ -113,6 +114,7 @@ export class PipelineOrchestrator {
   private readonly stageSequence: PipelineStep[];
   private readonly aiStages: Set<PipelineStep>;
   private readonly now: () => Date;
+  private readonly targetRhizomeId?: string;
   private readonly onEvent?: (event: PipelineOrchestratorEvent) => void;
 
   public constructor(options: PipelineOrchestratorOptions) {
@@ -121,6 +123,7 @@ export class PipelineOrchestrator {
     this.handlers = { ...(options.handlers ?? {}) };
     this.stageSequence = options.stageSequence ?? DEFAULT_STAGE_SEQUENCE;
     this.aiStages = options.aiStages ?? DEFAULT_AI_STAGES;
+    this.targetRhizomeId = options.targetRhizomeId;
     this.now = options.now ?? (() => new Date());
     this.onEvent = options.onEvent;
   }
@@ -168,7 +171,10 @@ export class PipelineOrchestrator {
   }
 
   private pickNextJob(ai: boolean): QueueJob | null {
-    const queuedJobs = this.queue.query({ status: "queued" });
+    const queuedJobs = this.targetRhizomeId
+      ? this.queue.query({ status: "queued", rhizomeId: this.targetRhizomeId })
+      : this.queue.query({ status: "queued" });
+
     return (
       queuedJobs.find((job) => {
         const isAiStage = this.aiStages.has(job.stage);

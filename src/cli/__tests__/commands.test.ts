@@ -192,6 +192,81 @@ describe("CLI command handlers", () => {
     });
   });
 
+  test("process --citekey limits processing to the selected study", async () => {
+    await withTempRhizome(async (root) => {
+      const items: ZoteroItem[] = [
+        {
+          key: "ITEM_A",
+          version: 1,
+          data: {
+            itemType: "journalArticle",
+            title: "Target Study",
+            creators: [{ creatorType: "author", firstName: "Jane", lastName: "Target" }],
+            date: "2023",
+            DOI: "10.1000/example.target",
+            collections: ["COLL_A"],
+          },
+        },
+        {
+          key: "ITEM_B",
+          version: 2,
+          data: {
+            itemType: "journalArticle",
+            title: "Other Study",
+            creators: [{ creatorType: "author", firstName: "John", lastName: "Other" }],
+            date: "2024",
+            DOI: "10.1000/example.other",
+            collections: ["COLL_A"],
+          },
+        },
+      ];
+
+      await runSyncZoteroCommand(
+        { full: true, collection: ["Adaptogens"] },
+        {
+          cwd: root,
+          createClient: () => makeFakeClient(items),
+        },
+      );
+
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      const studies = database.db
+        .query("SELECT rhizome_id, citekey FROM studies ORDER BY citekey ASC;")
+        .all() as Array<{ rhizome_id: string; citekey: string }>;
+      expect(studies).toHaveLength(2);
+
+      const target = studies[0];
+      const other = studies[1];
+      if (!target || !other) {
+        throw new Error("Expected two studies for selector test");
+      }
+
+      database.close();
+
+      const processResult = await runProcessCommand({ citekey: target.citekey }, { cwd: root });
+      expect(processResult.mode).toBe("non_ai");
+      expect(processResult.result.processed).toBeGreaterThan(0);
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+
+      const targetJobs = verifyDb.db
+        .query("SELECT stage, status FROM jobs WHERE rhizome_id = ? ORDER BY id ASC;")
+        .all(target.rhizome_id) as Array<{ stage: string; status: string }>;
+      const otherJobs = verifyDb.db
+        .query("SELECT stage, status FROM jobs WHERE rhizome_id = ? ORDER BY id ASC;")
+        .all(other.rhizome_id) as Array<{ stage: string; status: string }>;
+
+      expect(targetJobs.some((job) => job.stage === "ingest" && job.status === "complete")).toBe(true);
+      expect(otherJobs.every((job) => !(job.stage === "ingest" && job.status === "complete"))).toBe(true);
+      expect(otherJobs.some((job) => job.stage === "ingest" && job.status === "queued")).toBe(true);
+
+      verifyDb.close();
+    });
+  });
+
   test("lock status resolves legacy .rhizome workspace config when canonical config is absent", async () => {
     await withTempRhizome(async (root) => {
       await moveConfigToLegacyWorkspace(root, true);
