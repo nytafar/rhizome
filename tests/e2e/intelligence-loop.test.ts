@@ -9,26 +9,46 @@ import { runInitCommand } from "../../src/cli/commands/init";
 import { runSyncZoteroCommand } from "../../src/cli/commands/sync";
 import { runProcessCommand } from "../../src/cli/commands/process";
 import { runStatusCommand } from "../../src/cli/commands/status";
+import { runLivePreflight } from "./support/live-preflight";
+import { captureSummarizeFailureEvidence } from "./support/evidence";
 
-const requiredUserId = process.env.RHIZOME_E2E_ZOTERO_USER;
-const requiredCollection = process.env.RHIZOME_E2E_ZOTERO_COLLECTION;
-const requiredZoteroKey = process.env.ZOTERO_API_KEY;
-const requiredClaudeBinary = Bun.which("claude");
+const livePreflight = await runLivePreflight();
+if (!livePreflight.ok) {
+  console.warn(`[intelligence-loop:e2e] live test skipped: ${livePreflight.reason}`);
+}
 
-const shouldRunLiveE2E = Boolean(
-  requiredUserId && requiredCollection && requiredZoteroKey && requiredClaudeBinary,
-);
-
-const liveE2ETest = shouldRunLiveE2E ? test : test.skip;
+const liveE2ETest = livePreflight.ok ? test : test.skip;
+const liveTestName = livePreflight.ok
+  ? "runs init -> sync zotero -> process --ai -> status with 2 real studies"
+  : `runs init -> sync zotero -> process --ai -> status with 2 real studies (preflight skipped: ${livePreflight.reason})`;
 
 const SUMMARIZER_SKILL = `You are a structured study summarizer.
 Return JSON that strictly matches the provided schema.
 Keep each field concise and factual.
 If only abstract text is available, set source to "abstract_only".`;
 
+function appendEvidence(message: string, evidence: Awaited<ReturnType<typeof captureSummarizeFailureEvidence>>): string {
+  if (!evidence) {
+    return `${message}\nNo summarize failure evidence was captured.`;
+  }
+
+  const debugPaths =
+    evidence.debugPaths.length > 0
+      ? evidence.debugPaths.map((path) => `- ${path}`).join("\n")
+      : "- <none found in summarize error messages>";
+
+  return [
+    message,
+    `Failure artifacts: ${evidence.artifactDir}`,
+    `Failure manifest: ${evidence.manifestPath}`,
+    "Summarize debug paths:",
+    debugPaths,
+  ].join("\n");
+}
+
 describe("intelligence loop e2e", () => {
   liveE2ETest(
-    "runs init -> sync zotero -> process --ai -> status with 2 real studies",
+    liveTestName,
     async () => {
       const root = await mkdtemp(join(tmpdir(), "rhizome-intelligence-loop-"));
 
@@ -42,7 +62,7 @@ describe("intelligence loop e2e", () => {
             force: true,
             vault: vaultPath,
             researchRoot: "Research",
-            zoteroUser: requiredUserId,
+            zoteroUser: process.env.RHIZOME_E2E_ZOTERO_USER,
             zoteroKeyEnv: "ZOTERO_API_KEY",
             unpaywallEmail: "e2e@example.com",
             aiWindows: "00:00-23:59",
@@ -57,7 +77,7 @@ describe("intelligence loop e2e", () => {
         const syncResult = await runSyncZoteroCommand(
           {
             full: true,
-            collection: [requiredCollection as string],
+            collection: [process.env.RHIZOME_E2E_ZOTERO_COLLECTION as string],
           },
           { cwd: root },
         );
@@ -70,7 +90,15 @@ describe("intelligence loop e2e", () => {
         );
 
         expect(processResult.mode).toBe("ai");
-        expect(processResult.result.failed).toBe(0);
+
+        if (processResult.result.failed !== 0) {
+          const evidence = await captureSummarizeFailureEvidence(root);
+          const message = appendEvidence(
+            `Expected process --ai to succeed with failed=0, received failed=${processResult.result.failed}.`,
+            evidence,
+          );
+          throw new Error(message);
+        }
 
         const overview = await runStatusCommand({ json: true }, { cwd: root });
         expect(overview.mode).toBe("overview");
@@ -122,6 +150,12 @@ describe("intelligence loop e2e", () => {
             | undefined;
           expect(summarizeState?.status).toBe("complete");
         }
+      } catch (error) {
+        const evidence = await captureSummarizeFailureEvidence(root);
+        const baseMessage = error instanceof Error ? error.message : String(error);
+        throw new Error(appendEvidence(baseMessage, evidence), {
+          cause: error,
+        });
       } finally {
         await rm(root, { recursive: true, force: true });
       }
