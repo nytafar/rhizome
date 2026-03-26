@@ -21,5 +21,6 @@ export {
 } from "./stages/vault-write";
 export * from "./parser/types";
 export * from "./parser/registry";
+export * from "./parser/marker-provider";
 export * from "./zotero/sync";
 export * from "./vault/note-builder";
