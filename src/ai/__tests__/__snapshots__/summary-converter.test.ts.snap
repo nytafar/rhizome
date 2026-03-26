@@ -1,5 +1,6 @@
 // Bun Snapshot v1, https://bun.sh/docs/test/snapshots
 
+<<<<<<< HEAD
 exports[`summaryJsonToMarkdown renders summarizer JSON output and metadata into markdown 1`] = `
 "---
 note_type: study_summary
@@ -7,10 +8,20 @@ study_ref: smith2023ashwagandha
 skill_version: "1.0"
 model: "claude-opus-4-5"
 generated_at: "2026-03-25T17:30:00Z"
+=======
+exports[`summaryJsonToMarkdown converts summarizer JSON and metadata into canonical summary markdown 1`] = `
+"---
+note_type: study_summary
+study_ref: doe2024curcumin
+skill_version: "1.1"
+model: "claude-opus-4-5"
+generated_at: "2026-03-25T22:30:00Z"
+>>>>>>> milestone/M001
 source: "fulltext"
 ---
 
 ## TL;DR
+<<<<<<< HEAD
 Ashwagandha reduced cortisol and improved sleep quality over 8 weeks.
 
 ## Background & Rationale
@@ -34,11 +45,37 @@ Single center, short duration, self-reported sleep endpoint.
 
 ## Open Questions
 Does efficacy persist beyond 12 weeks and in older populations?
+=======
+Curcumin improved pain and function over placebo in 12 weeks.
+
+## Background & Rationale
+The study assessed curcumin for osteoarthritis symptom relief.
+
+## Methods
+Double-blind RCT in adults with knee OA, 500mg curcumin BID vs placebo for 12 weeks.
+
+## Key Findings
+Pain scores decreased by 24% vs 9% placebo (p=0.01). No severe adverse events reported.
+
+## Clinical / Practical Relevance
+Standardized curcumin may be useful as adjunctive care for mild-to-moderate OA symptoms.
+
+## Limitations
+Single-center trial and short follow-up limit long-term generalizability.
+
+## Compounds & Doses
+- **Curcumin**: 500 mg twice daily for 12 weeks
+- **Piperine**: 5 mg for unspecified
+
+## Open Questions
+Whether effects persist beyond 12 weeks and in multi-center populations.
+>>>>>>> milestone/M001
 
 ## Structured Extraction
 \`\`\`json
 {
   "herb_species": [
+<<<<<<< HEAD
     "Withania somnifera"
   ],
   "common_names": [
@@ -49,16 +86,34 @@ Does efficacy persist beyond 12 weeks and in older populations?
   ],
   "plant_parts": [
     "root"
+=======
+    "Curcuma longa"
+  ],
+  "common_names": [
+    "turmeric"
+  ],
+  "active_compounds": [
+    "curcumin",
+    "demethoxycurcumin"
+  ],
+  "plant_parts": [
+    "rhizome"
+>>>>>>> milestone/M001
   ],
   "extraction_types": [
     "ethanolic"
   ],
   "dosages": [
+<<<<<<< HEAD
     "600 mg/day"
+=======
+    "500 mg BID"
+>>>>>>> milestone/M001
   ],
   "adverse_events": [
     "mild GI discomfort"
   ],
+<<<<<<< HEAD
   "study_type": "randomized controlled trial",
   "sample_size": 120,
   "duration": "8 weeks",
@@ -66,4 +121,12 @@ Does efficacy persist beyond 12 weeks and in older populations?
 }
 \`\`\`
 "
+=======
+  "study_type": "RCT",
+  "sample_size": 84,
+  "duration": "12 weeks",
+  "population": "Adults with knee osteoarthritis"
+}
+\`\`\`"
+>>>>>>> milestone/M001
 `;

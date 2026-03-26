@@ -1,7 +1,7 @@
 import { mkdir, open, readFile, unlink, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
-export const DEFAULT_WRITER_LOCK_PATH = ".rhizome/locks/mutator.lock";
+export const DEFAULT_WRITER_LOCK_PATH = ".siss/locks/mutator.lock";
 export const DEFAULT_STALE_TIMEOUT_MS = 60_000;
 
 export interface WriterLockMetadata {

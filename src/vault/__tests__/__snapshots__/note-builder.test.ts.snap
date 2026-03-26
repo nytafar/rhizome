@@ -1,0 +1,91 @@
+// Bun Snapshot v1, https://bun.sh/docs/test/snapshots
+
+exports[`buildStudyNoteMarkdown renders canonical study note markdown with valid frontmatter 1`] = `
+"---
+siss_id: 550e8400-e29b-41d4-a716-446655440000
+citekey: smith2023ashwagandha
+note_type: study
+pipeline_overall: in_progress
+pipeline_steps:
+  ingest:
+    status: complete
+    updated_at: '2026-03-25T17:20:00Z'
+    retries: 0
+  zotero_sync:
+    status: complete
+    updated_at: '2026-03-25T17:20:05Z'
+    retries: 0
+  summarize:
+    status: complete
+    updated_at: '2026-03-25T17:31:00Z'
+    retries: 0
+  classify:
+    status: pending
+    updated_at: '2026-03-25T17:31:01Z'
+    retries: 0
+pipeline_error: null
+last_pipeline_run: '2026-03-25'
+title: Ashwagandha root extract reduces cortisol in chronically stressed adults
+authors:
+  - family: Smith
+    given: J
+  - family: Patel
+    given: R
+year: 2023
+journal: Phytomedicine
+doi: 10.1016/j.phymed.2023.01.012
+abstract: >-
+  Randomized, double-blind trial evaluating standardized ashwagandha root
+  extract in adults with chronic stress.
+item_type: journalArticle
+zotero_key: ABC123
+zotero_version: 42
+zotero_sync_status: active
+source: zotero
+source_collections:
+  - Adaptogens
+  - Clinical Trials
+source_tags:
+  - ashwagandha
+  - cortisol
+date_added: '2026-03-25T17:00:00Z'
+asset_dir: Research/studies/_assets/smith2023ashwagandha/
+pdf_path: Research/studies/_assets/smith2023ashwagandha/source.pdf
+pdf_available: true
+pdf_source: unpaywall
+fulltext_path: Research/studies/_assets/smith2023ashwagandha/fulltext.md
+summary_path: Research/studies/_assets/smith2023ashwagandha/summary.current.md
+---
+# Ashwagandha root extract reduces cortisol in chronically stressed adults
+
+> [!abstract]
+> Randomized, double-blind trial evaluating standardized ashwagandha root extract in adults with chronic stress.
+
+## Snapshot
+| | |
+|---|---|
+| **Type** | — |
+| **Population** | — |
+| **Duration** | — |
+| **Sample** | — |
+| **Outcome** | — |
+| **Evidence** | — |
+
+## TL;DR
+![[Research/studies/_assets/smith2023ashwagandha/summary.current#TL;DR]]
+
+## Key Findings
+![[Research/studies/_assets/smith2023ashwagandha/summary.current#Key Findings]]
+
+## Assets
+- [[Research/studies/_assets/smith2023ashwagandha/source.pdf|PDF]]
+- [[Research/studies/_assets/smith2023ashwagandha/fulltext.md|Full Text]]
+- [[Research/studies/_assets/smith2023ashwagandha/summary.current.md|AI Summary]]
+- [Open in Zotero](zotero://select/items/ABC123)
+
+## Version History
+| Date | Stage | Skill Version | Model |
+|---|---|---|---|
+| 2026-03-25T17:30:00Z | summary | 1.0 | claude-opus-4-5 |
+| — | classify | — | — |"
+`;
