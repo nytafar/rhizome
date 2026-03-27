@@ -15,7 +15,11 @@ import {
 } from "../../types/pipeline";
 import { runSummarizeStage } from "../../stages/summarize";
 import { runClassifyStage } from "../../stages/classify";
-import { classifierOutputSchema } from "../../ai/schemas/classifier";
+import {
+  classifierOutputSchema,
+  type ClassifierOutput,
+  type ClassifierTaxonomyGroup,
+} from "../../ai/schemas/classifier";
 import { runPdfFetchStage } from "../../stages/pdf-fetch";
 import { runFulltextMarkerStage } from "../../stages/fulltext-marker";
 import { runVaultWriteStage } from "../../stages/vault-write";
@@ -23,6 +27,7 @@ import { ParserRegistry } from "../../parser/registry";
 import { MarkerProvider } from "../../parser/marker-provider";
 import type { StudyRecord } from "../../types/study";
 import type { Database as BunSQLiteDatabase } from "bun:sqlite";
+import { TaxonomyManager } from "../../taxonomy/manager";
 import { getVaultFolderStructurePaths } from "../../vault/folder-creator";
 
 interface SummarizeStudyRow {
@@ -116,6 +121,76 @@ function resolveMarkerBinaryPath(cwd: string, config: RhizomeConfig): string {
   const pythonEnvPath = config.parser.marker.python_env;
   const pythonEnvRoot = isAbsolute(pythonEnvPath) ? pythonEnvPath : join(cwd, pythonEnvPath);
   return join(pythonEnvRoot, "bin", "marker_single");
+}
+
+function validateClassificationForTaxonomy(output: ClassifierOutput): ClassifierOutput {
+  const validation = classifierOutputSchema.safeParse(output);
+  if (!validation.success) {
+    throw new Error(
+      `Malformed classify taxonomy payload: ${validation.error.issues
+        .map((issue) => `${issue.path.join(".") || "root"}: ${issue.message}`)
+        .join("; ")}`,
+    );
+  }
+
+  return validation.data;
+}
+
+async function applyClassificationToTaxonomy(params: {
+  config: RhizomeConfig;
+  output: ClassifierOutput;
+  loggedAt: string;
+}): Promise<{
+  usageUpdates: number;
+  pendingUpdates: number;
+  promoted: Array<{
+    group: ClassifierTaxonomyGroup;
+    value: string;
+    count: number;
+    promoted_at: string;
+    sources: string[];
+  }>;
+}> {
+  const taxonomy = TaxonomyManager.fromConfig(params.config);
+  let state = await taxonomy.load();
+
+  let usageUpdates = 0;
+  for (const [group, values] of Object.entries(params.output.tier_6_taxonomy) as Array<
+    [ClassifierTaxonomyGroup, string[]]
+  >) {
+    for (const value of values) {
+      state = taxonomy.recordUsage(state, {
+        group,
+        value,
+        usedAt: params.loggedAt,
+      });
+      usageUpdates += 1;
+    }
+  }
+
+  let pendingUpdates = 0;
+  for (const provisional of params.output.tier_7_provisional) {
+    state = taxonomy.addPending(state, {
+      group: provisional.group,
+      value: provisional.value,
+      source: "classifier",
+      seenAt: params.loggedAt,
+    });
+    pendingUpdates += 1;
+  }
+
+  const promotion = taxonomy.autoPromote(state, {
+    threshold: params.config.taxonomy.auto_promote_threshold,
+    promotedAt: params.loggedAt,
+  });
+
+  await taxonomy.save(promotion.state);
+
+  return {
+    usageUpdates,
+    pendingUpdates,
+    promoted: promotion.promoted,
+  };
 }
 
 function buildCommandLabel(options: ProcessCommandOptions): string {
@@ -763,6 +838,13 @@ function registerBuiltInStageHandlers(
       assetsRootDir,
     });
 
+    const validatedOutput = validateClassificationForTaxonomy(classification.output);
+    const taxonomyMutation = await applyClassificationToTaxonomy({
+      config: params.config,
+      output: validatedOutput,
+      loggedAt: classification.metadata.generatedAt,
+    });
+
     return {
       metadata: {
         summaryPath: classification.summaryPath,
@@ -771,10 +853,13 @@ function registerBuiltInStageHandlers(
         classifier_generated_at: classification.metadata.generatedAt,
         source: classification.metadata.source,
         provisional_count: classification.metadata.provisionalCount,
-        tier_4: classification.output.tier_4,
-        tier_5: classification.output.tier_5,
-        tier_6_taxonomy: classification.output.tier_6_taxonomy,
-        tier_7_provisional: classification.output.tier_7_provisional,
+        taxonomy_usage_updates: taxonomyMutation.usageUpdates,
+        taxonomy_pending_updates: taxonomyMutation.pendingUpdates,
+        taxonomy_promotions: taxonomyMutation.promoted,
+        tier_4: validatedOutput.tier_4,
+        tier_5: validatedOutput.tier_5,
+        tier_6_taxonomy: validatedOutput.tier_6_taxonomy,
+        tier_7_provisional: validatedOutput.tier_7_provisional,
       },
     };
   });

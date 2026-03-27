@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import matter from "gray-matter";
-import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "../../db/database";
@@ -242,6 +242,10 @@ function buildStubClassifyResultWithProvisional(
       tier_7_provisional: tier7Provisional,
     },
   };
+}
+
+function makeTaxonomyPath(vaultPath: string): string {
+  return join(vaultPath, "Research", "_system", "taxonomy.json");
 }
 
 function seedRetryStudy(params: {
@@ -724,6 +728,388 @@ describe("CLI command handlers", () => {
         "new:hpa_axis_resilience",
         "new:stress_recovery",
       ]);
+    });
+  });
+
+  test("process --ai mutates taxonomy usage, dedupes pending, and auto-promotes at threshold", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440040",
+        citekey: "lane2026taxonomyfirst",
+        title: "Taxonomy first pass",
+      });
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440041",
+        citekey: "lane2026taxonomysecond",
+        title: "Taxonomy second pass",
+      });
+
+      database.close();
+
+      const classifyPayload = {
+        therapeutic_areas: ["stress_support"],
+        mechanisms: ["cortisol_modulation"],
+        indications: [],
+        contraindications: [],
+        drug_interactions: [],
+        research_gaps: [],
+      } as const;
+
+      const processDeps = {
+        cwd: root,
+        loadConfigFn: async (configPath: string) => {
+          const config = await loadConfig(configPath);
+          return {
+            ...config,
+            ai: {
+              ...config.ai,
+              windows: ["00:00-23:59"],
+              timezone: "UTC",
+              batch_size: 2,
+              cooldown_seconds: 0,
+            },
+            taxonomy: {
+              ...config.taxonomy,
+              auto_promote_threshold: 2,
+            },
+          };
+        },
+        summarizeStageRunner: async (input: { study: { citekey: string } }) => ({
+          summaryPath: join(
+            vaultPath,
+            "Research",
+            "studies",
+            "_assets",
+            input.study.citekey,
+            "summary.current.md",
+          ),
+          markdown: "# Summary\n",
+          output: {
+            source: "abstract_only" as const,
+            tldr: "TLDR",
+            background: "Background",
+            methods: "Methods",
+            key_findings: "Findings",
+            clinical_relevance: "Relevance",
+            limitations: "Limitations",
+          },
+          metadata: {
+            stage: PipelineStep.SUMMARIZE,
+            durationMs: 1,
+            model: "stub-model",
+            skillVersion: "v1",
+            source: "abstract_only" as const,
+            usedFulltext: false,
+          },
+        }),
+        classifyStageRunner: async (input: { study: { citekey: string } }) => {
+          const base = buildStubClassifyResultWithProvisional(input.study.citekey, vaultPath, [
+            { group: "mechanisms", value: "new:hpa_axis_resilience", confidence: 0.76 },
+            { group: "mechanisms", value: "new:hpa_axis_resilience", confidence: 0.74 },
+          ]);
+
+          return {
+            ...base,
+            output: {
+              ...base.output,
+              tier_6_taxonomy: classifyPayload,
+            },
+            metadata: {
+              ...base.metadata,
+              tier_6_taxonomy: classifyPayload,
+            },
+          };
+        },
+      };
+
+      const firstResult = await runProcessCommand({ ai: true, batch: 2 }, processDeps);
+      const secondResult = await runProcessCommand({ ai: true, batch: 2 }, processDeps);
+
+      expect(firstResult.mode).toBe("ai");
+      expect(secondResult.mode).toBe("ai");
+      expect(firstResult.result.failed).toBe(0);
+      expect(secondResult.result.failed).toBe(0);
+
+      const taxonomyPath = makeTaxonomyPath(vaultPath);
+      const taxonomyRaw = await readFile(taxonomyPath, "utf8");
+      const taxonomy = JSON.parse(taxonomyRaw) as {
+        groups: {
+          therapeutic_areas: { values: Record<string, { count: number }> };
+          mechanisms: {
+            values: Record<string, { count: number; promoted_at?: string; promoted_sources?: string[] }>;
+            pending: Record<string, { count: number }>;
+          };
+        };
+      };
+
+      expect(taxonomy.groups.therapeutic_areas.values.stress_support.count).toBe(2);
+      expect(taxonomy.groups.mechanisms.values.cortisol_modulation.count).toBe(2);
+      expect(taxonomy.groups.mechanisms.pending.hpa_axis_resilience).toBeUndefined();
+      expect(taxonomy.groups.mechanisms.values.hpa_axis_resilience.count).toBe(4);
+      expect(taxonomy.groups.mechanisms.values.hpa_axis_resilience.promoted_at).toBeDefined();
+      expect(taxonomy.groups.mechanisms.values.hpa_axis_resilience.promoted_sources).toEqual([
+        "classifier",
+      ]);
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+
+      const classifyRows = verifyDb.db
+        .query(
+          `
+          SELECT metadata
+          FROM jobs
+          WHERE stage = ? AND status = 'complete'
+          ORDER BY id ASC;
+          `,
+        )
+        .all(PipelineStep.CLASSIFY) as Array<{ metadata: string }>;
+
+      verifyDb.close();
+
+      expect(classifyRows).toHaveLength(2);
+      for (const row of classifyRows) {
+        const metadata = JSON.parse(row.metadata) as {
+          taxonomy_usage_updates?: number;
+          taxonomy_pending_updates?: number;
+          taxonomy_promotions?: unknown[];
+        };
+        expect(metadata.taxonomy_usage_updates).toBe(2);
+        expect(metadata.taxonomy_pending_updates).toBe(2);
+        expect(Array.isArray(metadata.taxonomy_promotions)).toBe(true);
+      }
+    });
+  });
+
+  test("process --ai fails classify stage when taxonomy file is malformed before mutation", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      const rhizomeId = "550e8400-e29b-41d4-a716-446655440042";
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId,
+        citekey: "lane2026taxonomymalformedfile",
+        title: "Malformed taxonomy file",
+      });
+      database.close();
+
+      await mkdir(join(vaultPath, "Research", "_system"), { recursive: true });
+      await writeFile(makeTaxonomyPath(vaultPath), "{bad-json", "utf8");
+
+      const processDeps = {
+        cwd: root,
+        loadConfigFn: async (configPath: string) => {
+          const config = await loadConfig(configPath);
+          return {
+            ...config,
+            ai: {
+              ...config.ai,
+              windows: ["00:00-23:59"],
+              timezone: "UTC",
+              batch_size: 1,
+              cooldown_seconds: 0,
+            },
+          };
+        },
+        summarizeStageRunner: async (input: { study: { citekey: string } }) => ({
+          summaryPath: join(
+            vaultPath,
+            "Research",
+            "studies",
+            "_assets",
+            input.study.citekey,
+            "summary.current.md",
+          ),
+          markdown: "# Summary\n",
+          output: {
+            source: "abstract_only" as const,
+            tldr: "TLDR",
+            background: "Background",
+            methods: "Methods",
+            key_findings: "Findings",
+            clinical_relevance: "Relevance",
+            limitations: "Limitations",
+          },
+          metadata: {
+            stage: PipelineStep.SUMMARIZE,
+            durationMs: 1,
+            model: "stub-model",
+            skillVersion: "v1",
+            source: "abstract_only" as const,
+            usedFulltext: false,
+          },
+        }),
+        classifyStageRunner: async (input: { study: { citekey: string } }) =>
+          buildStubClassifyResultWithProvisional(input.study.citekey, vaultPath, [
+            { group: "mechanisms", value: "new:hpa_axis_resilience", confidence: 0.76 },
+          ]),
+      };
+
+      const firstResult = await runProcessCommand({ ai: true, batch: 1 }, processDeps);
+      const secondResult = await runProcessCommand({ ai: true, batch: 1 }, processDeps);
+
+      expect(firstResult.mode).toBe("ai");
+      expect(secondResult.mode).toBe("ai");
+      expect(secondResult.result.failed).toBe(1);
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+
+      const classifyJob = verifyDb.db
+        .query(
+          `
+          SELECT status, error_class, error_message
+          FROM jobs
+          WHERE rhizome_id = ? AND stage = ?
+          ORDER BY id DESC
+          LIMIT 1;
+          `,
+        )
+        .get(rhizomeId, PipelineStep.CLASSIFY) as {
+        status: string;
+        error_class: string | null;
+        error_message: string | null;
+      };
+
+      verifyDb.close();
+
+      expect(classifyJob.status).toBe("paused");
+      expect(classifyJob.error_class).toBe("permanent");
+      expect(classifyJob.error_message).toContain("[taxonomy:parse]");
+    });
+  });
+
+  test("process --ai fails classify stage on malformed provisional entries", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      const rhizomeId = "550e8400-e29b-41d4-a716-446655440043";
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId,
+        citekey: "lane2026taxonomybadprovisional",
+        title: "Malformed provisional output",
+      });
+      database.close();
+
+      const processDeps = {
+        cwd: root,
+        loadConfigFn: async (configPath: string) => {
+          const config = await loadConfig(configPath);
+          return {
+            ...config,
+            ai: {
+              ...config.ai,
+              windows: ["00:00-23:59"],
+              timezone: "UTC",
+              batch_size: 1,
+              cooldown_seconds: 0,
+            },
+          };
+        },
+        summarizeStageRunner: async (input: { study: { citekey: string } }) => ({
+          summaryPath: join(
+            vaultPath,
+            "Research",
+            "studies",
+            "_assets",
+            input.study.citekey,
+            "summary.current.md",
+          ),
+          markdown: "# Summary\n",
+          output: {
+            source: "abstract_only" as const,
+            tldr: "TLDR",
+            background: "Background",
+            methods: "Methods",
+            key_findings: "Findings",
+            clinical_relevance: "Relevance",
+            limitations: "Limitations",
+          },
+          metadata: {
+            stage: PipelineStep.SUMMARIZE,
+            durationMs: 1,
+            model: "stub-model",
+            skillVersion: "v1",
+            source: "abstract_only" as const,
+            usedFulltext: false,
+          },
+        }),
+        classifyStageRunner: async (input: { study: { citekey: string } }) => {
+          const base = buildStubClassifyResult(input.study.citekey, vaultPath);
+          return {
+            ...base,
+            output: {
+              ...base.output,
+              tier_7_provisional: [
+                {
+                  group: "mechanisms",
+                  value: "not-new-format",
+                  confidence: 0.5,
+                },
+              ],
+            },
+            metadata: {
+              ...base.metadata,
+              provisionalCount: 1,
+              provisional: [
+                {
+                  group: "mechanisms",
+                  value: "not-new-format",
+                  confidence: 0.5,
+                },
+              ],
+              tier_7_provisional: [
+                {
+                  group: "mechanisms",
+                  value: "not-new-format",
+                  confidence: 0.5,
+                },
+              ],
+            },
+          } as never;
+        },
+      };
+
+      const firstResult = await runProcessCommand({ ai: true, batch: 1 }, processDeps);
+      const secondResult = await runProcessCommand({ ai: true, batch: 1 }, processDeps);
+
+      expect(firstResult.mode).toBe("ai");
+      expect(secondResult.mode).toBe("ai");
+      expect(secondResult.result.failed).toBe(1);
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+
+      const classifyJob = verifyDb.db
+        .query(
+          `
+          SELECT status, error_class, error_message
+          FROM jobs
+          WHERE rhizome_id = ? AND stage = ?
+          ORDER BY id DESC
+          LIMIT 1;
+          `,
+        )
+        .get(rhizomeId, PipelineStep.CLASSIFY) as {
+        status: string;
+        error_class: string | null;
+        error_message: string | null;
+      };
+
+      verifyDb.close();
+
+      expect(classifyJob.status).toBe("paused");
+      expect(classifyJob.error_class).toBe("permanent");
+      expect(classifyJob.error_message).toContain("Malformed classify taxonomy payload");
     });
   });
 
