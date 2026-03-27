@@ -23,16 +23,16 @@ async function makeTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
-function insertStudy(database: Database, sissId: string, citekey: string): void {
+function insertStudy(database: Database, rhizomeId: string, citekey: string): void {
   database.db
     .query(
       `
-      INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+      INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
       VALUES (?, ?, ?, ?, ?, ?);
       `,
     )
     .run(
-      sissId,
+      rhizomeId,
       citekey,
       "zotero",
       "Fulltext marker study",
@@ -41,15 +41,15 @@ function insertStudy(database: Database, sissId: string, citekey: string): void 
     );
 }
 
-function insertPdfFetchJob(database: Database, sissId: string, metadata: unknown): void {
+function insertPdfFetchJob(database: Database, rhizomeId: string, metadata: unknown): void {
   database.db
     .query(
       `
-      INSERT INTO jobs (siss_id, stage, status, metadata, completed_at)
+      INSERT INTO jobs (rhizome_id, stage, status, metadata, completed_at)
       VALUES (?, ?, 'complete', ?, datetime('now'));
       `,
     )
-    .run(sissId, PipelineStep.PDF_FETCH, JSON.stringify(metadata));
+    .run(rhizomeId, PipelineStep.PDF_FETCH, JSON.stringify(metadata));
 }
 
 function createRegistry(provider: MarkdownProvider): ParserRegistry {
@@ -65,8 +65,8 @@ describe("runFulltextMarkerStage", () => {
     const database = new Database({ path: join(root, "rhizome.sqlite") });
     database.init();
 
-    const sissId = "550e8400-e29b-41d4-a716-446655440030";
-    insertStudy(database, sissId, "smith2026nopdf");
+    const rhizomeId = "550e8400-e29b-41d4-a716-446655440030";
+    insertStudy(database, rhizomeId, "smith2026nopdf");
 
     const providerCalls: Array<{ pdfPath: string; outputDir: string }> = [];
     const registry = createRegistry({
@@ -94,7 +94,7 @@ describe("runFulltextMarkerStage", () => {
 
     const result = await runFulltextMarkerStage({
       db: database.db,
-      sissId,
+      rhizomeId,
       assetsRootDir: join(root, "assets"),
       parserRegistry: registry,
     });
@@ -116,17 +116,17 @@ describe("runFulltextMarkerStage", () => {
     const database = new Database({ path: join(root, "rhizome.sqlite") });
     database.init();
 
-    const sissId = "550e8400-e29b-41d4-a716-446655440031";
-    insertStudy(database, sissId, "doe2026malformed");
+    const rhizomeId = "550e8400-e29b-41d4-a716-446655440031";
+    insertStudy(database, rhizomeId, "doe2026malformed");
 
     database.db
       .query(
         `
-        INSERT INTO jobs (siss_id, stage, status, metadata, completed_at)
+        INSERT INTO jobs (rhizome_id, stage, status, metadata, completed_at)
         VALUES (?, ?, 'complete', ?, datetime('now'));
         `,
       )
-      .run(sissId, PipelineStep.PDF_FETCH, "{not-json}");
+      .run(rhizomeId, PipelineStep.PDF_FETCH, "{not-json}");
 
     const registry = createRegistry({
       id: "marker",
@@ -141,7 +141,7 @@ describe("runFulltextMarkerStage", () => {
 
     const result = await runFulltextMarkerStage({
       db: database.db,
-      sissId,
+      rhizomeId,
       assetsRootDir: join(root, "assets"),
       parserRegistry: registry,
     });
@@ -157,10 +157,10 @@ describe("runFulltextMarkerStage", () => {
     const database = new Database({ path: join(root, "rhizome.sqlite") });
     database.init();
 
-    const sissId = "550e8400-e29b-41d4-a716-446655440038";
-    insertStudy(database, sissId, "doe2026missingpdfpath");
+    const rhizomeId = "550e8400-e29b-41d4-a716-446655440038";
+    insertStudy(database, rhizomeId, "doe2026missingpdfpath");
 
-    insertPdfFetchJob(database, sissId, {
+    insertPdfFetchJob(database, rhizomeId, {
       stage: PipelineStep.PDF_FETCH,
       pdfAvailable: true,
       pdfSource: "unpaywall",
@@ -179,7 +179,7 @@ describe("runFulltextMarkerStage", () => {
 
     const result = await runFulltextMarkerStage({
       db: database.db,
-      sissId,
+      rhizomeId,
       assetsRootDir: join(root, "assets"),
       parserRegistry: registry,
     });
@@ -200,12 +200,12 @@ describe("runFulltextMarkerStage", () => {
     const database = new Database({ path: join(root, "rhizome.sqlite") });
     database.init();
 
-    const sissId = "550e8400-e29b-41d4-a716-446655440032";
+    const rhizomeId = "550e8400-e29b-41d4-a716-446655440032";
     const citekey = "lane2026fulltext";
-    insertStudy(database, sissId, citekey);
+    insertStudy(database, rhizomeId, citekey);
 
     const pdfPath = join(root, "assets", citekey, "paper.pdf");
-    insertPdfFetchJob(database, sissId, {
+    insertPdfFetchJob(database, rhizomeId, {
       stage: PipelineStep.PDF_FETCH,
       pdfAvailable: true,
       pdfPath,
@@ -239,7 +239,7 @@ describe("runFulltextMarkerStage", () => {
 
     const result = await runFulltextMarkerStage({
       db: database.db,
-      sissId,
+      rhizomeId,
       assetsRootDir: join(root, "assets"),
       parserRegistry: registry,
     });
@@ -274,10 +274,10 @@ describe("runFulltextMarkerStage", () => {
     const database = new Database({ path: join(root, "rhizome.sqlite") });
     database.init();
 
-    const sissId = "550e8400-e29b-41d4-a716-446655440033";
-    insertStudy(database, sissId, "rivera2026failure");
+    const rhizomeId = "550e8400-e29b-41d4-a716-446655440033";
+    insertStudy(database, rhizomeId, "rivera2026failure");
 
-    insertPdfFetchJob(database, sissId, {
+    insertPdfFetchJob(database, rhizomeId, {
       stage: PipelineStep.PDF_FETCH,
       pdfAvailable: true,
       pdfPath: join(root, "assets", "rivera2026failure", "paper.pdf"),
@@ -297,7 +297,7 @@ describe("runFulltextMarkerStage", () => {
     await expect(
       runFulltextMarkerStage({
         db: database.db,
-        sissId,
+        rhizomeId,
         assetsRootDir: join(root, "assets"),
         parserRegistry: registry,
       }),
@@ -311,10 +311,10 @@ describe("runFulltextMarkerStage", () => {
     const database = new Database({ path: join(root, "rhizome.sqlite") });
     database.init();
 
-    const sissId = "550e8400-e29b-41d4-a716-446655440034";
-    insertStudy(database, sissId, "nguyen2026invalid");
+    const rhizomeId = "550e8400-e29b-41d4-a716-446655440034";
+    insertStudy(database, rhizomeId, "nguyen2026invalid");
 
-    insertPdfFetchJob(database, sissId, {
+    insertPdfFetchJob(database, rhizomeId, {
       stage: PipelineStep.PDF_FETCH,
       pdfAvailable: true,
       pdfPath: join(root, "assets", "nguyen2026invalid", "paper.pdf"),
@@ -345,7 +345,7 @@ describe("runFulltextMarkerStage", () => {
     await expect(
       runFulltextMarkerStage({
         db: database.db,
-        sissId,
+        rhizomeId,
         assetsRootDir: join(root, "assets"),
         parserRegistry: registry,
       }),

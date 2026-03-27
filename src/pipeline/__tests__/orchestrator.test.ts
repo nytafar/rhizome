@@ -24,18 +24,18 @@ async function withDatabase<T>(run: (database: Database) => T | Promise<T>): Pro
   }
 }
 
-function insertStudy(database: Database, sissId: string, citekey: string): void {
+function insertStudy(database: Database, rhizomeId: string, citekey: string): void {
   database.db
     .query(
       `
-      INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+      INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
       VALUES (?, ?, ?, ?, ?, ?);
       `,
     )
-    .run(sissId, citekey, "manual", `Study ${sissId}`, PipelineOverallStatus.NOT_STARTED, "{}");
+    .run(rhizomeId, citekey, "manual", `Study ${rhizomeId}`, PipelineOverallStatus.NOT_STARTED, "{}");
 }
 
-function readPipelineState(database: Database, sissId: string): {
+function readPipelineState(database: Database, rhizomeId: string): {
   overall: PipelineOverallStatus;
   steps: Record<string, { status: PipelineStepStatus; updated_at: string; retries: number }>;
   error: string | null;
@@ -45,11 +45,11 @@ function readPipelineState(database: Database, sissId: string): {
       `
       SELECT pipeline_overall, pipeline_steps_json, pipeline_error
       FROM studies
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
       LIMIT 1;
       `,
     )
-    .get(sissId) as {
+    .get(rhizomeId) as {
     pipeline_overall: PipelineOverallStatus;
     pipeline_steps_json: string;
     pipeline_error: string | null;
@@ -72,7 +72,7 @@ describe("PipelineOrchestrator", () => {
 
       const queue = new JobQueue(database.db);
       queue.enqueue({
-        sissId: "SISS-001",
+        rhizomeId: "SISS-001",
         stage: PipelineStep.INGEST,
         status: "queued",
       });
@@ -118,7 +118,7 @@ describe("PipelineOrchestrator", () => {
       expect(stateAfterNonAI.steps[PipelineStep.FULLTEXT_MARKER]?.status).toBe(PipelineStepStatus.COMPLETE);
       expect(stateAfterNonAI.steps[PipelineStep.SUMMARIZE]?.status).toBe(PipelineStepStatus.QUEUED);
 
-      const queuedAfterNonAI = queue.query({ sissId: "SISS-001", status: "queued" });
+      const queuedAfterNonAI = queue.query({ rhizomeId: "SISS-001", status: "queued" });
       expect(queuedAfterNonAI.map((job) => job.stage)).toEqual([PipelineStep.SUMMARIZE]);
 
       const nonAiRetry = await orchestrator.processNonAI();
@@ -168,7 +168,7 @@ describe("PipelineOrchestrator", () => {
 
       const queue = new JobQueue(database.db);
       queue.enqueue({
-        sissId: "SISS-004",
+        rhizomeId: "SISS-004",
         stage: PipelineStep.INGEST,
         status: "queued",
       });
@@ -213,11 +213,11 @@ describe("PipelineOrchestrator", () => {
         PipelineStep.FULLTEXT_MARKER,
       ]);
 
-      const queued = queue.query({ sissId: "SISS-004", status: "queued" }).map((job) => job.stage);
+      const queued = queue.query({ rhizomeId: "SISS-004", status: "queued" }).map((job) => job.stage);
       expect(queued).toEqual([PipelineStep.SUMMARIZE]);
 
       const fulltextQueued = queue.query({
-        sissId: "SISS-004",
+        rhizomeId: "SISS-004",
         stage: PipelineStep.FULLTEXT_MARKER,
         status: "queued",
       });

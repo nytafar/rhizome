@@ -19,16 +19,16 @@ async function makeTempDir(prefix: string): Promise<string> {
   return dir;
 }
 
-function insertStudy(database: Database, sissId: string, citekey: string): void {
+function insertStudy(database: Database, rhizomeId: string, citekey: string): void {
   database.db
     .query(
       `
-      INSERT INTO studies (siss_id, citekey, source, title, doi, pipeline_overall, pipeline_steps_json)
+      INSERT INTO studies (rhizome_id, citekey, source, title, doi, pipeline_overall, pipeline_steps_json)
       VALUES (?, ?, ?, ?, ?, ?, ?);
       `,
     )
     .run(
-      sissId,
+      rhizomeId,
       citekey,
       "zotero",
       "PDF fetch study",
@@ -47,9 +47,9 @@ describe("runPdfFetchStage", () => {
     const database = new Database({ path: dbPath });
     database.init();
 
-    const sissId = "550e8400-e29b-41d4-a716-446655440010";
+    const rhizomeId = "550e8400-e29b-41d4-a716-446655440010";
     const citekey = "smith2026waterfall";
-    insertStudy(database, sissId, citekey);
+    insertStudy(database, rhizomeId, citekey);
 
     const fixtureDir = join(process.cwd(), "tests", "fixtures", "pdf");
     const invalidFixture = Bun.file(join(fixtureDir, "invalid-header.bin"));
@@ -83,7 +83,7 @@ describe("runPdfFetchStage", () => {
 
     const result = await runPdfFetchStage({
       db: database.db,
-      sissId,
+      rhizomeId,
       assetsRootDir: assetsRoot,
       sourceOrder: ["zotero", "unpaywall", "europepmc"],
       maxFileSizeMb: 5,
@@ -123,12 +123,12 @@ describe("runPdfFetchStage", () => {
     const database = new Database({ path: dbPath });
     database.init();
 
-    const sissId = "550e8400-e29b-41d4-a716-446655440011";
-    insertStudy(database, sissId, "smith2026nopdf");
+    const rhizomeId = "550e8400-e29b-41d4-a716-446655440011";
+    insertStudy(database, rhizomeId, "smith2026nopdf");
 
     const result = await runPdfFetchStage({
       db: database.db,
-      sissId,
+      rhizomeId,
       assetsRootDir: join(root, "assets"),
       sourceOrder: ["zotero", "unpaywall", "europepmc"],
       maxFileSizeMb: 5,

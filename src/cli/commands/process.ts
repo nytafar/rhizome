@@ -570,7 +570,7 @@ function registerBuiltInStageHandlers(
   orchestrator.registerStageHandler(PipelineStep.PDF_FETCH, async ({ job }) => {
     const result = await runPdfFetchStage({
       db: params.db,
-      sissId: job.sissId,
+      rhizomeId: job.rhizomeId,
       assetsRootDir,
       sourceOrder: params.config.pdf.sources,
       maxFileSizeMb: params.config.pdf.max_file_size_mb,
@@ -584,7 +584,7 @@ function registerBuiltInStageHandlers(
   orchestrator.registerStageHandler(PipelineStep.FULLTEXT_MARKER, async ({ job }) => {
     const result = await runFulltextMarkerStage({
       db: params.db,
-      sissId: job.sissId,
+      rhizomeId: job.rhizomeId,
       assetsRootDir,
       parserRegistry,
     });

@@ -98,7 +98,7 @@ async function moveConfigToLegacyWorkspace(root: string, rewriteWorkspacePaths =
 
 function seedAiSummarizeStudy(params: {
   database: Database;
-  sissId: string;
+  rhizomeId: string;
   citekey: string;
   title: string;
   fulltextMetadataRaw?: string;
@@ -106,12 +106,12 @@ function seedAiSummarizeStudy(params: {
   params.database.db
     .query(
       `
-      INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+      INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
       VALUES (?, ?, ?, ?, ?, ?);
       `,
     )
     .run(
-      params.sissId,
+      params.rhizomeId,
       params.citekey,
       "zotero",
       params.title,
@@ -123,21 +123,21 @@ function seedAiSummarizeStudy(params: {
     params.database.db
       .query(
         `
-        INSERT INTO jobs (siss_id, stage, status, metadata)
+        INSERT INTO jobs (rhizome_id, stage, status, metadata)
         VALUES (?, ?, 'complete', ?);
         `,
       )
-      .run(params.sissId, PipelineStep.FULLTEXT_MARKER, params.fulltextMetadataRaw);
+      .run(params.rhizomeId, PipelineStep.FULLTEXT_MARKER, params.fulltextMetadataRaw);
   }
 
   params.database.db
     .query(
       `
-      INSERT INTO jobs (siss_id, stage, status, metadata)
+      INSERT INTO jobs (rhizome_id, stage, status, metadata)
       VALUES (?, ?, 'queued', NULL);
       `,
     )
-    .run(params.sissId, PipelineStep.SUMMARIZE);
+    .run(params.rhizomeId, PipelineStep.SUMMARIZE);
 }
 
 describe("CLI command handlers", () => {
@@ -251,7 +251,7 @@ describe("CLI command handlers", () => {
       const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
       database.init();
 
-      const sissId = "550e8400-e29b-41d4-a716-446655440022";
+      const rhizomeId = "550e8400-e29b-41d4-a716-446655440022";
       const citekey = "lane2026fulltextinput";
       const fulltextPath = join(vaultPath, "Research", "studies", "_assets", citekey, "fulltext.md");
       await mkdir(join(vaultPath, "Research", "studies", "_assets", citekey), { recursive: true });
@@ -259,7 +259,7 @@ describe("CLI command handlers", () => {
 
       seedAiSummarizeStudy({
         database,
-        sissId,
+        rhizomeId,
         citekey,
         title: "Fulltext summarize handoff",
         fulltextMetadataRaw: JSON.stringify({ fulltextPath }),
@@ -311,12 +311,12 @@ describe("CLI command handlers", () => {
       const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
       database.init();
 
-      const sissId = "550e8400-e29b-41d4-a716-446655440023";
+      const rhizomeId = "550e8400-e29b-41d4-a716-446655440023";
       const citekey = "lane2026malformedfulltextjson";
 
       seedAiSummarizeStudy({
         database,
-        sissId,
+        rhizomeId,
         citekey,
         title: "Malformed fulltext metadata fallback",
         fulltextMetadataRaw: "{not-json}",
@@ -367,21 +367,21 @@ describe("CLI command handlers", () => {
     await withTempRhizome(async (root, vaultPath) => {
       const scenarios = [
         {
-          sissId: "550e8400-e29b-41d4-a716-446655440024",
+          rhizomeId: "550e8400-e29b-41d4-a716-446655440024",
           citekey: "lane2026outofrootfulltext",
           title: "Out of root fallback",
           fulltextPath: join(root, "outside-vault.md"),
           markdown: "# Should not be read\n",
         },
         {
-          sissId: "550e8400-e29b-41d4-a716-446655440025",
+          rhizomeId: "550e8400-e29b-41d4-a716-446655440025",
           citekey: "lane2026missingfulltext",
           title: "Missing file fallback",
           fulltextPath: join(vaultPath, "Research", "studies", "_assets", "lane2026missingfulltext", "missing.md"),
           markdown: undefined,
         },
         {
-          sissId: "550e8400-e29b-41d4-a716-446655440026",
+          rhizomeId: "550e8400-e29b-41d4-a716-446655440026",
           citekey: "lane2026emptyfulltext",
           title: "Empty markdown fallback",
           fulltextPath: join(vaultPath, "Research", "studies", "_assets", "lane2026emptyfulltext", "fulltext.md"),
@@ -402,7 +402,7 @@ describe("CLI command handlers", () => {
 
         seedAiSummarizeStudy({
           database,
-          sissId: scenario.sissId,
+          rhizomeId: scenario.rhizomeId,
           citekey: scenario.citekey,
           title: scenario.title,
           fulltextMetadataRaw: JSON.stringify({ fulltextPath: scenario.fulltextPath }),
@@ -557,7 +557,7 @@ describe("CLI command handlers", () => {
       const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
       database.init();
 
-      const sissId = "550e8400-e29b-41d4-a716-446655440020";
+      const rhizomeId = "550e8400-e29b-41d4-a716-446655440020";
       const citekey = "lane2026pdfmeta";
       const pipelineSteps = {
         [PipelineStep.INGEST]: {
@@ -580,12 +580,12 @@ describe("CLI command handlers", () => {
       database.db
         .query(
           `
-          INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json, doi)
+          INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json, doi)
           VALUES (?, ?, ?, ?, ?, ?, ?);
           `,
         )
         .run(
-          sissId,
+          rhizomeId,
           citekey,
           "zotero",
           "PDF metadata propagation",
@@ -608,12 +608,12 @@ describe("CLI command handlers", () => {
       database.db
         .query(
           `
-          INSERT INTO jobs (siss_id, stage, status, metadata)
+          INSERT INTO jobs (rhizome_id, stage, status, metadata)
           VALUES (?, ?, 'complete', ?), (?, ?, 'complete', ?), (?, ?, 'complete', ?), (?, ?, 'queued', NULL);
           `,
         )
         .run(
-          sissId,
+          rhizomeId,
           PipelineStep.PDF_FETCH,
           JSON.stringify({
             stage: PipelineStep.PDF_FETCH,
@@ -622,7 +622,7 @@ describe("CLI command handlers", () => {
             pdfPath: pdfAbsolutePath,
             attempts: [{ source: "unpaywall", outcome: "success" }],
           }),
-          sissId,
+          rhizomeId,
           PipelineStep.FULLTEXT_MARKER,
           JSON.stringify({
             stage: PipelineStep.FULLTEXT_MARKER,
@@ -630,10 +630,10 @@ describe("CLI command handlers", () => {
             fulltextPath: fulltextAbsolutePath,
             provider: "marker",
           }),
-          sissId,
+          rhizomeId,
           PipelineStep.SUMMARIZE,
           JSON.stringify({ summaryPath: summaryAbsolutePath, source: "abstract_only" }),
-          sissId,
+          rhizomeId,
           PipelineStep.VAULT_WRITE,
         );
 
@@ -649,12 +649,12 @@ describe("CLI command handlers", () => {
 
       expect(frontmatter.pdf_available).toBe(true);
       expect(frontmatter.pdf_source).toBe("unpaywall");
-      expect(frontmatter.pdf_path).toBe(pdfRelativePath);
-      expect(frontmatter.fulltext_path).toBe(
-        "Research/studies/_assets/lane2026pdfmeta/fulltext.md",
+      expect(frontmatter.pdf).toBe(`[[${pdfRelativePath}|PDF]]`);
+      expect(frontmatter.fulltext).toBe(
+        "[[Research/studies/_assets/lane2026pdfmeta/fulltext.md|Full Text]]",
       );
-      expect(frontmatter.summary_path).toBe(
-        "Research/studies/_assets/lane2026pdfmeta/summary.current.md",
+      expect(frontmatter.summary).toBe(
+        "[[Research/studies/_assets/lane2026pdfmeta/summary.current.md|AI Summary]]",
       );
     });
   });
@@ -664,7 +664,7 @@ describe("CLI command handlers", () => {
       const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
       database.init();
 
-      const sissId = "550e8400-e29b-41d4-a716-446655440021";
+      const rhizomeId = "550e8400-e29b-41d4-a716-446655440021";
       const citekey = "lane2026fulltextmalformed";
       const pipelineSteps = {
         [PipelineStep.INGEST]: {
@@ -687,12 +687,12 @@ describe("CLI command handlers", () => {
       database.db
         .query(
           `
-          INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json, doi)
+          INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json, doi)
           VALUES (?, ?, ?, ?, ?, ?, ?);
           `,
         )
         .run(
-          sissId,
+          rhizomeId,
           citekey,
           "zotero",
           "Malformed fulltext metadata",
@@ -712,12 +712,12 @@ describe("CLI command handlers", () => {
       database.db
         .query(
           `
-          INSERT INTO jobs (siss_id, stage, status, metadata)
+          INSERT INTO jobs (rhizome_id, stage, status, metadata)
           VALUES (?, ?, 'complete', ?), (?, ?, 'complete', ?), (?, ?, 'complete', ?), (?, ?, 'queued', NULL);
           `,
         )
         .run(
-          sissId,
+          rhizomeId,
           PipelineStep.PDF_FETCH,
           JSON.stringify({
             stage: PipelineStep.PDF_FETCH,
@@ -726,13 +726,13 @@ describe("CLI command handlers", () => {
             pdfPath: pdfAbsolutePath,
             attempts: [{ source: "unpaywall", outcome: "success" }],
           }),
-          sissId,
+          rhizomeId,
           PipelineStep.FULLTEXT_MARKER,
           "{not-json}",
-          sissId,
+          rhizomeId,
           PipelineStep.SUMMARIZE,
           JSON.stringify({ summaryPath: summaryAbsolutePath, source: "abstract_only" }),
-          sissId,
+          rhizomeId,
           PipelineStep.VAULT_WRITE,
         );
 
@@ -747,8 +747,8 @@ describe("CLI command handlers", () => {
       const frontmatter = parseStudyFrontmatter(parsed.data);
 
       expect(frontmatter.pdf_available).toBe(true);
-      expect(frontmatter.pdf_path).toBe(pdfRelativePath);
-      expect(frontmatter.fulltext_path).toBeUndefined();
+      expect(frontmatter.pdf).toBe(`[[${pdfRelativePath}|PDF]]`);
+      expect(frontmatter.fulltext).toBeUndefined();
     });
   });
 
