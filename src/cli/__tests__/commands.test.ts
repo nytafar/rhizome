@@ -4,6 +4,7 @@ import { mkdtemp, mkdir, readFile, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { Database } from "../../db/database";
+import { loadConfig } from "../../config/loader";
 import { WriterLock } from "../../lock/writer-lock";
 import { parseStudyFrontmatter } from "../../schema/frontmatter";
 import { PipelineOverallStatus, PipelineStep, PipelineStepStatus } from "../../types/pipeline";
@@ -11,6 +12,7 @@ import { runInitCommand } from "../commands/init";
 import { runSyncZoteroCommand } from "../commands/sync";
 import { runProcessCommand } from "../commands/process";
 import { runStatusCommand } from "../commands/status";
+import { runRetryCommand } from "../commands/retry";
 import { runLockClearCommand, runLockStatusCommand } from "../commands/lock";
 import { CANONICAL_WORKSPACE_DIR, LEGACY_WORKSPACE_DIR } from "../../config/workspace-contract";
 import type { ZoteroItem } from "../../zotero/client";
@@ -96,6 +98,22 @@ async function moveConfigToLegacyWorkspace(root: string, rewriteWorkspacePaths =
   await rm(canonicalConfigPath, { force: true });
 }
 
+function minuteToClock(minute: number): string {
+  const normalized = ((minute % 1440) + 1440) % 1440;
+  const hours = Math.floor(normalized / 60)
+    .toString()
+    .padStart(2, "0");
+  const minutes = (normalized % 60).toString().padStart(2, "0");
+  return `${hours}:${minutes}`;
+}
+
+function buildInactiveUtcWindow(now: Date): string {
+  const nowMinutes = now.getUTCHours() * 60 + now.getUTCMinutes();
+  const start = (nowMinutes + 1) % 1440;
+  const end = (nowMinutes + 2) % 1440;
+  return `${minuteToClock(start)}-${minuteToClock(end)}`;
+}
+
 function seedAiSummarizeStudy(params: {
   database: Database;
   rhizomeId: string;
@@ -138,6 +156,29 @@ function seedAiSummarizeStudy(params: {
       `,
     )
     .run(params.rhizomeId, PipelineStep.SUMMARIZE);
+}
+
+function seedRetryStudy(params: {
+  database: Database;
+  rhizomeId: string;
+  citekey: string;
+  title: string;
+}): void {
+  params.database.db
+    .query(
+      `
+      INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+      VALUES (?, ?, ?, ?, ?, ?);
+      `,
+    )
+    .run(
+      params.rhizomeId,
+      params.citekey,
+      "zotero",
+      params.title,
+      PipelineOverallStatus.NEEDS_ATTENTION,
+      "{}",
+    );
 }
 
 describe("CLI command handlers", () => {
@@ -246,6 +287,340 @@ describe("CLI command handlers", () => {
     });
   });
 
+  test("process --ai uses config ai.batch_size when --batch is omitted", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440031",
+        citekey: "lane2026configbatcha",
+        title: "Config batch A",
+      });
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440032",
+        citekey: "lane2026configbatchb",
+        title: "Config batch B",
+      });
+
+      database.close();
+
+      const result = await runProcessCommand(
+        { ai: true },
+        {
+          cwd: root,
+          loadConfigFn: async (configPath) => {
+            const config = await loadConfig(configPath);
+            return {
+              ...config,
+              ai: {
+                ...config.ai,
+                windows: ["00:00-23:59"],
+                timezone: "UTC",
+                batch_size: 1,
+                cooldown_seconds: 0,
+              },
+            };
+          },
+          summarizeStageRunner: async (input) => ({
+            summaryPath: join(
+              vaultPath,
+              "Research",
+              "studies",
+              "_assets",
+              input.study.citekey,
+              "summary.current.md",
+            ),
+            markdown: "# Summary\n",
+            output: {
+              source: "abstract_only",
+              tldr: "TLDR",
+              background: "Background",
+              methods: "Methods",
+              key_findings: "Findings",
+              clinical_relevance: "Relevance",
+              limitations: "Limitations",
+            },
+            metadata: {
+              stage: PipelineStep.SUMMARIZE,
+              durationMs: 1,
+              model: "stub-model",
+              skillVersion: "v1",
+              source: "abstract_only",
+              usedFulltext: false,
+            },
+          }),
+        },
+      );
+
+      expect(result.mode).toBe("ai");
+      expect(result.result.processed).toBe(2);
+      expect(result.result.succeeded).toBe(2);
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+      const remainingQueued = verifyDb.db
+        .query(
+          `
+          SELECT COUNT(*) AS count
+          FROM jobs
+          WHERE stage = ? AND status = 'queued';
+          `,
+        )
+        .get(PipelineStep.SUMMARIZE) as { count: number };
+      verifyDb.close();
+
+      expect(remainingQueued.count).toBe(1);
+    });
+  });
+
+  test("process --ai uses CLI --batch over config ai.batch_size", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440033",
+        citekey: "lane2026clibatcha",
+        title: "CLI batch A",
+      });
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440034",
+        citekey: "lane2026clibatchb",
+        title: "CLI batch B",
+      });
+
+      database.close();
+
+      const result = await runProcessCommand(
+        { ai: true, batch: 2 },
+        {
+          cwd: root,
+          loadConfigFn: async (configPath) => {
+            const config = await loadConfig(configPath);
+            return {
+              ...config,
+              ai: {
+                ...config.ai,
+                windows: ["00:00-23:59"],
+                timezone: "UTC",
+                batch_size: 1,
+                cooldown_seconds: 0,
+              },
+            };
+          },
+          summarizeStageRunner: async (input) => ({
+            summaryPath: join(
+              vaultPath,
+              "Research",
+              "studies",
+              "_assets",
+              input.study.citekey,
+              "summary.current.md",
+            ),
+            markdown: "# Summary\n",
+            output: {
+              source: "abstract_only",
+              tldr: "TLDR",
+              background: "Background",
+              methods: "Methods",
+              key_findings: "Findings",
+              clinical_relevance: "Relevance",
+              limitations: "Limitations",
+            },
+            metadata: {
+              stage: PipelineStep.SUMMARIZE,
+              durationMs: 1,
+              model: "stub-model",
+              skillVersion: "v1",
+              source: "abstract_only",
+              usedFulltext: false,
+            },
+          }),
+        },
+      );
+
+      expect(result.mode).toBe("ai");
+      expect(result.result.processed).toBe(4);
+      expect(result.result.succeeded).toBe(4);
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+      const remainingQueued = verifyDb.db
+        .query(
+          `
+          SELECT COUNT(*) AS count
+          FROM jobs
+          WHERE stage = ? AND status = 'queued';
+          `,
+        )
+        .get(PipelineStep.SUMMARIZE) as { count: number };
+      verifyDb.close();
+
+      expect(remainingQueued.count).toBe(0);
+    });
+  });
+
+  test("process --ai holds queued AI jobs when configured window is inactive", async () => {
+    await withTempRhizome(async (root) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440035",
+        citekey: "lane2026windowhold",
+        title: "Window hold",
+      });
+
+      database.close();
+
+      const result = await runProcessCommand(
+        { ai: true },
+        {
+          cwd: root,
+          loadConfigFn: async (configPath) => {
+            const config = await loadConfig(configPath);
+            return {
+              ...config,
+              ai: {
+                ...config.ai,
+                windows: [buildInactiveUtcWindow(new Date())],
+                timezone: "UTC",
+                batch_size: 5,
+                cooldown_seconds: 0,
+              },
+            };
+          },
+        },
+      );
+
+      expect(result.mode).toBe("ai");
+      expect(result.result.processed).toBe(0);
+      expect(result.result.succeeded).toBe(0);
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+      const queuedSummaries = verifyDb.db
+        .query(
+          `
+          SELECT COUNT(*) AS count
+          FROM jobs
+          WHERE stage = ? AND status = 'queued';
+          `,
+        )
+        .get(PipelineStep.SUMMARIZE) as { count: number };
+      verifyDb.close();
+
+      expect(queuedSummaries.count).toBe(1);
+    });
+  });
+
+  test("process fails fast when config loader rejects malformed AI config", async () => {
+    await withTempRhizome(async (root) => {
+      await expect(
+        runProcessCommand(
+          { ai: true },
+          {
+            cwd: root,
+            loadConfigFn: async () => {
+              throw new Error("Invalid config: ai.windows[0] has invalid window format");
+            },
+          },
+        ),
+      ).rejects.toThrow("Invalid config: ai.windows[0] has invalid window format");
+    });
+  });
+
+  test("process --ai surfaces invalid AI timezone during AI pass after non-AI pre-pass", async () => {
+    await withTempRhizome(async (root) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      const rhizomeId = "550e8400-e29b-41d4-a716-446655440036";
+      database.db
+        .query(
+          `
+          INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+          VALUES (?, ?, ?, ?, ?, ?);
+          `,
+        )
+        .run(
+          rhizomeId,
+          "lane2026invalidtimezone",
+          "zotero",
+          "Invalid timezone",
+          PipelineOverallStatus.NOT_STARTED,
+          "{}",
+        );
+
+      database.db
+        .query(
+          `
+          INSERT INTO jobs (rhizome_id, stage, status, metadata)
+          VALUES (?, ?, 'queued', NULL), (?, ?, 'queued', NULL);
+          `,
+        )
+        .run(rhizomeId, PipelineStep.INGEST, rhizomeId, PipelineStep.SUMMARIZE);
+
+      database.close();
+
+      await expect(
+        runProcessCommand(
+          { ai: true },
+          {
+            cwd: root,
+            loadConfigFn: async (configPath) => {
+              const config = await loadConfig(configPath);
+              return {
+                ...config,
+                ai: {
+                  ...config.ai,
+                  windows: ["00:00-23:59"],
+                  timezone: "Mars/Phobos",
+                  batch_size: 5,
+                  cooldown_seconds: 0,
+                },
+              };
+            },
+          },
+        ),
+      ).rejects.toThrow("Invalid AI window configuration");
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+
+      const ingestComplete = verifyDb.db
+        .query(
+          `
+          SELECT COUNT(*) AS count
+          FROM jobs
+          WHERE stage = ? AND status = 'complete';
+          `,
+        )
+        .get(PipelineStep.INGEST) as { count: number };
+
+      const summarizeQueued = verifyDb.db
+        .query(
+          `
+          SELECT COUNT(*) AS count
+          FROM jobs
+          WHERE stage = ? AND status = 'queued';
+          `,
+        )
+        .get(PipelineStep.SUMMARIZE) as { count: number };
+
+      verifyDb.close();
+
+      expect(ingestComplete.count).toBe(1);
+      expect(summarizeQueued.count).toBe(1);
+    });
+  });
+
   test("process summarize loads fulltext markdown when fulltext.marker metadata points to readable vault content", async () => {
     await withTempRhizome(async (root, vaultPath) => {
       const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
@@ -273,6 +648,18 @@ describe("CLI command handlers", () => {
         { ai: true, batch: 5 },
         {
           cwd: root,
+          loadConfigFn: async (configPath) => {
+            const config = await loadConfig(configPath);
+            return {
+              ...config,
+              ai: {
+                ...config.ai,
+                windows: ["00:00-23:59"],
+                timezone: "UTC",
+                cooldown_seconds: 0,
+              },
+            };
+          },
           summarizeStageRunner: async (input) => {
             capturedFulltextMarkdown = input.fulltextMarkdown;
             return {
@@ -330,6 +717,18 @@ describe("CLI command handlers", () => {
         { ai: true, batch: 5 },
         {
           cwd: root,
+          loadConfigFn: async (configPath) => {
+            const config = await loadConfig(configPath);
+            return {
+              ...config,
+              ai: {
+                ...config.ai,
+                windows: ["00:00-23:59"],
+                timezone: "UTC",
+                cooldown_seconds: 0,
+              },
+            };
+          },
           summarizeStageRunner: async (input) => {
             capturedFulltextMarkdown = input.fulltextMarkdown;
             return {
@@ -417,6 +816,18 @@ describe("CLI command handlers", () => {
         { ai: true, batch: 10 },
         {
           cwd: root,
+          loadConfigFn: async (configPath) => {
+            const config = await loadConfig(configPath);
+            return {
+              ...config,
+              ai: {
+                ...config.ai,
+                windows: ["00:00-23:59"],
+                timezone: "UTC",
+                cooldown_seconds: 0,
+              },
+            };
+          },
           summarizeStageRunner: async (input) => {
             capturedByCitekey.set(input.study.citekey, input.fulltextMarkdown);
             return {
@@ -749,6 +1160,261 @@ describe("CLI command handlers", () => {
       expect(frontmatter.pdf_available).toBe(true);
       expect(frontmatter.pdf).toBe(`[[${pdfRelativePath}|PDF]]`);
       expect(frontmatter.fulltext).toBeUndefined();
+    });
+  });
+
+  test("retry --citekey requeues only that study and preserves retry_count by default", async () => {
+    await withTempRhizome(async (root) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      seedRetryStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440101",
+        citekey: "lane2026retrytarget",
+        title: "Retry target",
+      });
+      seedRetryStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440102",
+        citekey: "lane2026retryother",
+        title: "Retry other",
+      });
+
+      database.db
+        .query(
+          `
+          INSERT INTO jobs (rhizome_id, stage, status, retry_count, error_message, error_class, metadata)
+          VALUES
+            (?, ?, 'error', 2, 'temporary outage', 'transient', ?),
+            (?, ?, 'paused', 1, 'manual pause', 'permanent', ?),
+            (?, ?, 'error', 4, 'other failure', 'transient', ?);
+          `,
+        )
+        .run(
+          "550e8400-e29b-41d4-a716-446655440101",
+          PipelineStep.SUMMARIZE,
+          JSON.stringify({ next_attempt_at: "2099-01-01T00:00:00.000Z", pause_reason: "max_retries_exhausted" }),
+          "550e8400-e29b-41d4-a716-446655440101",
+          PipelineStep.VAULT_WRITE,
+          JSON.stringify({ pause_reason: "max_retries_exhausted", last_error: "manual pause" }),
+          "550e8400-e29b-41d4-a716-446655440102",
+          PipelineStep.PDF_FETCH,
+          JSON.stringify({ next_attempt_at: "2099-01-01T00:00:00.000Z" }),
+        );
+
+      database.close();
+
+      const result = await runRetryCommand({ citekey: "lane2026retrytarget", json: true }, { cwd: root });
+      expect(result.selector.mode).toBe("citekey");
+      expect(result.studiesMatched).toBe(1);
+      expect(result.jobsRetried).toBe(2);
+      expect(result.retriedByStatus.error).toBe(1);
+      expect(result.retriedByStatus.paused).toBe(1);
+      expect(result.resetRetries).toBe(false);
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+
+      const targetJobs = verifyDb.db
+        .query(
+          `
+          SELECT status, retry_count, error_message, error_class, metadata
+          FROM jobs
+          WHERE rhizome_id = ?
+          ORDER BY id ASC;
+          `,
+        )
+        .all("550e8400-e29b-41d4-a716-446655440101") as Array<{
+        status: string;
+        retry_count: number;
+        error_message: string | null;
+        error_class: string | null;
+        metadata: string | null;
+      }>;
+
+      const otherJob = verifyDb.db
+        .query(
+          `
+          SELECT status, retry_count
+          FROM jobs
+          WHERE rhizome_id = ?
+          LIMIT 1;
+          `,
+        )
+        .get("550e8400-e29b-41d4-a716-446655440102") as { status: string; retry_count: number };
+
+      verifyDb.close();
+
+      expect(targetJobs.map((job) => job.status)).toEqual(["queued", "queued"]);
+      expect(targetJobs.map((job) => job.retry_count)).toEqual([2, 1]);
+      expect(targetJobs.every((job) => job.error_message === null && job.error_class === null)).toBe(true);
+      expect(JSON.parse(targetJobs[0]?.metadata ?? "{}").next_attempt_at).toBeUndefined();
+      expect(JSON.parse(targetJobs[1]?.metadata ?? "{}").pause_reason).toBeUndefined();
+
+      expect(otherJob.status).toBe("error");
+      expect(otherJob.retry_count).toBe(4);
+
+      const statusOverview = await runStatusCommand({ json: true }, { cwd: root });
+      expect(statusOverview.mode).toBe("overview");
+      expect(statusOverview.overview?.queue["pdf_fetch.error"]).toBe(1);
+      expect(statusOverview.overview?.queue["summarize.queued"]).toBe(1);
+      expect(statusOverview.overview?.queue["vault_write.queued"]).toBe(1);
+    });
+  });
+
+  test("retry --all-failed requeues all error/paused jobs and --reset-retries zeros retry_count", async () => {
+    await withTempRhizome(async (root) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      seedRetryStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440103",
+        citekey: "lane2026retrybulk1",
+        title: "Retry bulk one",
+      });
+      seedRetryStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440104",
+        citekey: "lane2026retrybulk2",
+        title: "Retry bulk two",
+      });
+
+      database.db
+        .query(
+          `
+          INSERT INTO jobs (rhizome_id, stage, status, retry_count, metadata)
+          VALUES
+            (?, ?, 'error', 3, ?),
+            (?, ?, 'paused', 2, ?),
+            (?, ?, 'queued', 9, NULL);
+          `,
+        )
+        .run(
+          "550e8400-e29b-41d4-a716-446655440103",
+          PipelineStep.SUMMARIZE,
+          JSON.stringify({ next_attempt_at: "2099-01-01T00:00:00.000Z" }),
+          "550e8400-e29b-41d4-a716-446655440104",
+          PipelineStep.PDF_FETCH,
+          JSON.stringify({ pause_reason: "manual" }),
+          "550e8400-e29b-41d4-a716-446655440104",
+          PipelineStep.VAULT_WRITE,
+        );
+
+      database.close();
+
+      const result = await runRetryCommand(
+        { allFailed: true, resetRetries: true, json: true },
+        { cwd: root },
+      );
+
+      expect(result.selector.mode).toBe("all_failed");
+      expect(result.studiesMatched).toBe(2);
+      expect(result.jobsRetried).toBe(2);
+      expect(result.retriedByStatus.error).toBe(1);
+      expect(result.retriedByStatus.paused).toBe(1);
+      expect(result.resetRetries).toBe(true);
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+
+      const retriedJobs = verifyDb.db
+        .query(
+          `
+          SELECT status, retry_count
+          FROM jobs
+          WHERE stage IN (?, ?)
+          ORDER BY id ASC;
+          `,
+        )
+        .all(PipelineStep.SUMMARIZE, PipelineStep.PDF_FETCH) as Array<{
+        status: string;
+        retry_count: number;
+      }>;
+
+      const unaffected = verifyDb.db
+        .query(
+          `
+          SELECT status, retry_count
+          FROM jobs
+          WHERE stage = ?
+          LIMIT 1;
+          `,
+        )
+        .get(PipelineStep.VAULT_WRITE) as { status: string; retry_count: number };
+
+      verifyDb.close();
+
+      expect(retriedJobs).toEqual([
+        { status: "queued", retry_count: 0 },
+        { status: "queued", retry_count: 0 },
+      ]);
+      expect(unaffected).toEqual({ status: "queued", retry_count: 9 });
+
+      const statusOverview = await runStatusCommand({ json: true }, { cwd: root });
+      expect(statusOverview.mode).toBe("overview");
+      expect(statusOverview.overview?.queue["summarize.queued"]).toBe(1);
+      expect(statusOverview.overview?.queue["pdf_fetch.queued"]).toBe(1);
+      expect(statusOverview.overview?.queue["vault_write.queued"]).toBe(1);
+    });
+  });
+
+  test("retry rejects invalid selector combinations and malformed citekey input", async () => {
+    await withTempRhizome(async (root) => {
+      await expect(runRetryCommand({}, { cwd: root })).rejects.toThrow(
+        "Select exactly one retry target: use either --citekey <key> or --all-failed",
+      );
+
+      await expect(runRetryCommand({ citekey: "lane2026x", allFailed: true }, { cwd: root })).rejects.toThrow(
+        "Select exactly one retry target: use either --citekey <key> or --all-failed",
+      );
+
+      await expect(runRetryCommand({ citekey: "   " }, { cwd: root })).rejects.toThrow(
+        "--citekey requires a non-empty value",
+      );
+    });
+  });
+
+  test("retry --citekey errors for unknown study selector", async () => {
+    await withTempRhizome(async (root) => {
+      await expect(runRetryCommand({ citekey: "lane2026missingstudy" }, { cwd: root })).rejects.toThrow(
+        "Study not found for citekey=lane2026missingstudy",
+      );
+    });
+  });
+
+  test("retry --all-failed is an explicit no-op when no failed/paused jobs exist", async () => {
+    await withTempRhizome(async (root) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      seedRetryStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440105",
+        citekey: "lane2026retrynoop",
+        title: "Retry no-op",
+      });
+
+      database.db
+        .query(
+          `
+          INSERT INTO jobs (rhizome_id, stage, status, retry_count, metadata)
+          VALUES (?, ?, 'queued', 7, NULL);
+          `,
+        )
+        .run("550e8400-e29b-41d4-a716-446655440105", PipelineStep.SUMMARIZE);
+
+      database.close();
+
+      const result = await runRetryCommand({ allFailed: true, json: true }, { cwd: root });
+      expect(result.studiesMatched).toBe(0);
+      expect(result.jobsRetried).toBe(0);
+      expect(result.retriedByStatus).toEqual({ error: 0, paused: 0 });
+
+      const statusOverview = await runStatusCommand({ json: true }, { cwd: root });
+      expect(statusOverview.mode).toBe("overview");
+      expect(statusOverview.overview?.queue["summarize.queued"]).toBe(1);
     });
   });
 

@@ -716,13 +716,15 @@ export async function runProcessCommand(
     });
 
     const aiMode = options.ai === true;
+    const aiBatchSize = options.batch ?? config.ai.batch_size;
     const result = aiMode
       ? combineResults(
           await orchestrator.processNonAI(),
           await orchestrator.processAI({
-            batchSize: options.batch,
-            windows: ["00:00-23:59"],
-            timezone: "UTC",
+            batchSize: aiBatchSize,
+            windows: config.ai.windows,
+            timezone: config.ai.timezone,
+            cooldownSeconds: config.ai.cooldown_seconds,
           }),
           await orchestrator.processNonAI(),
         )

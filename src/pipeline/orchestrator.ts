@@ -94,6 +94,11 @@ const REQUIRED_PHASE1_STEPS: PipelineStep[] = [
   PipelineStep.VAULT_WRITE,
 ];
 
+const RETRY_BASE_DELAY_MS = 30_000;
+const RETRY_MAX_DELAY_MS = 15 * 60_000;
+
+type FailureClassification = "transient" | "permanent";
+
 function defaultSleep(milliseconds: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
 }
@@ -253,8 +258,8 @@ export class PipelineOrchestrator {
 
   private pickNextJob(ai: boolean): QueueJob | null {
     const queuedJobs = this.targetRhizomeId
-      ? this.queue.query({ status: "queued", rhizomeId: this.targetRhizomeId })
-      : this.queue.query({ status: "queued" });
+      ? this.queue.query({ status: "queued", rhizomeId: this.targetRhizomeId, readyOnly: true, atTime: this.now() })
+      : this.queue.query({ status: "queued", readyOnly: true, atTime: this.now() });
 
     return (
       queuedJobs.find((job) => {
@@ -292,13 +297,26 @@ export class PipelineOrchestrator {
 
     if (!handler) {
       const completedAt = this.now().toISOString();
+      const message = `No handler registered for stage: ${job.stage}`;
+      const nextRetryCount = job.retryCount + 1;
+
       this.queue.updateStatus({
         jobId: job.id,
-        status: "error",
+        status: "paused",
         completedAt,
-        errorMessage: `No handler registered for stage: ${job.stage}`,
+        errorMessage: message,
         errorClass: "permanent",
         incrementRetryCount: true,
+        metadata: JSON.stringify(
+          this.buildFailureMetadata({
+            existingMetadata: job.metadata,
+            classification: "permanent",
+            retryCount: nextRetryCount,
+            message,
+            completedAt,
+            pauseReason: "handler_missing",
+          }),
+        ),
       });
 
       this.updateStudyStageStatus({
@@ -306,8 +324,8 @@ export class PipelineOrchestrator {
         stage: job.stage,
         status: PipelineStepStatus.FAILED,
         updatedAt: completedAt,
-        retries: job.retryCount + 1,
-        error: `No handler registered for stage: ${job.stage}`,
+        retries: nextRetryCount,
+        error: message,
       });
 
       this.queue.recordPipelineRun({
@@ -317,11 +335,10 @@ export class PipelineOrchestrator {
         status: "failed",
         startedAt,
         completedAt,
-        retries: job.retryCount + 1,
+        retries: nextRetryCount,
         skipReason: "handler_missing",
-        error: `No handler registered for stage: ${job.stage}`,
+        error: message,
       });
-
       this.onEvent?.({
         type: "stage-handler-missing",
         rhizomeId: job.rhizomeId,
@@ -382,16 +399,42 @@ export class PipelineOrchestrator {
 
       return true;
     } catch (error) {
-      const completedAt = this.now().toISOString();
-      const message = error instanceof Error ? error.message : String(error);
+      const completedAtDate = this.now();
+      const completedAt = completedAtDate.toISOString();
+      const classification = this.classifyFailure(error);
+      const message = this.errorMessage(error);
+      const nextRetryCount = job.retryCount + 1;
+      const canRetry = this.shouldRetry({
+        classification,
+        nextRetryCount,
+        maxRetries: job.maxRetries,
+      });
+
+      const status = canRetry ? "queued" : "paused";
+      const pauseReason = canRetry
+        ? undefined
+        : classification === "permanent"
+          ? "permanent_error"
+          : "max_retries_exhausted";
 
       this.queue.updateStatus({
         jobId: job.id,
-        status: "error",
+        status,
         completedAt,
         errorMessage: message,
-        errorClass: "transient",
+        errorClass: classification,
         incrementRetryCount: true,
+        metadata: JSON.stringify(
+          this.buildFailureMetadata({
+            existingMetadata: job.metadata,
+            classification,
+            retryCount: nextRetryCount,
+            message,
+            completedAt,
+            nextAttemptAt: canRetry ? this.nextAttemptAt(nextRetryCount, completedAtDate) : null,
+            pauseReason,
+          }),
+        ),
       });
 
       this.updateStudyStageStatus({
@@ -399,7 +442,7 @@ export class PipelineOrchestrator {
         stage: job.stage,
         status: PipelineStepStatus.FAILED,
         updatedAt: completedAt,
-        retries: job.retryCount + 1,
+        retries: nextRetryCount,
         error: message,
       });
 
@@ -410,7 +453,7 @@ export class PipelineOrchestrator {
         status: "failed",
         startedAt,
         completedAt,
-        retries: job.retryCount + 1,
+        retries: nextRetryCount,
         error: message,
       });
 
@@ -422,6 +465,223 @@ export class PipelineOrchestrator {
       });
 
       return false;
+    }
+  }
+
+  private classifyFailure(error: unknown): FailureClassification {
+    if (!error || typeof error !== "object") {
+      return "permanent";
+    }
+
+    const record = error as Record<string, unknown>;
+
+    const classificationHint = this.readClassificationHint(record);
+    if (classificationHint) {
+      return classificationHint;
+    }
+
+    const retryable = this.readBooleanHint(record, ["retryable", "isRetryable", "transient"]);
+    if (retryable !== null) {
+      return retryable ? "transient" : "permanent";
+    }
+
+    const code = this.readStringHint(record, ["code", "errorCode", "name"]);
+    if (code && this.isTransientCode(code)) {
+      return "transient";
+    }
+
+    const message = this.errorMessage(error).toLowerCase();
+    if (message.length > 0 && this.isTransientMessage(message)) {
+      return "transient";
+    }
+
+    return "permanent";
+  }
+
+  private readClassificationHint(record: Record<string, unknown>): FailureClassification | null {
+    const hint = this.readStringHint(record, [
+      "errorClass",
+      "error_class",
+      "classification",
+      "errorClassification",
+      "kind",
+      "type",
+    ]);
+
+    if (!hint) {
+      return null;
+    }
+
+    const normalized = hint.trim().toLowerCase();
+    if (normalized === "transient") {
+      return "transient";
+    }
+
+    if (normalized === "permanent") {
+      return "permanent";
+    }
+
+    return "permanent";
+  }
+
+  private readBooleanHint(record: Record<string, unknown>, keys: string[]): boolean | null {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "boolean") {
+        return value;
+      }
+    }
+
+    return null;
+  }
+
+  private readStringHint(record: Record<string, unknown>, keys: string[]): string | null {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim().length > 0) {
+        return value;
+      }
+    }
+
+    return null;
+  }
+
+  private isTransientCode(code: string): boolean {
+    const normalized = code.trim().toLowerCase();
+    const transientCodes = new Set<string>([
+      "timeout",
+      "timeout_error",
+      "request_timeout",
+      "timed_out",
+      "subprocess_timeout",
+      "etimedout",
+      "econnreset",
+      "econnrefused",
+      "enetunreach",
+      "ehostunreach",
+      "eai_again",
+      "rate_limit",
+      "rate_limited",
+      "429",
+      "500",
+      "502",
+      "503",
+      "504",
+      "temporary_unavailable",
+      "service_unavailable",
+    ]);
+
+    if (transientCodes.has(normalized)) {
+      return true;
+    }
+
+    return normalized.includes("timeout")
+      || normalized.includes("rate")
+      || normalized.includes("temporar")
+      || normalized.includes("unavailable");
+  }
+
+  private isTransientMessage(message: string): boolean {
+    return message.includes("timeout")
+      || message.includes("timed out")
+      || message.includes("temporarily unavailable")
+      || message.includes("temporary failure")
+      || message.includes("rate limit")
+      || message.includes("too many requests")
+      || message.includes("connection reset")
+      || message.includes("connection refused")
+      || message.includes("network")
+      || message.includes("try again");
+  }
+
+  private shouldRetry(params: {
+    classification: FailureClassification;
+    nextRetryCount: number;
+    maxRetries: number;
+  }): boolean {
+    if (params.classification !== "transient") {
+      return false;
+    }
+
+    const maxRetries = Number.isFinite(params.maxRetries) ? Math.max(0, params.maxRetries) : 0;
+    return params.nextRetryCount <= maxRetries;
+  }
+
+  private nextAttemptAt(retryCount: number, now: Date): string {
+    const exponent = Math.max(0, retryCount - 1);
+    const computedDelay = RETRY_BASE_DELAY_MS * Math.pow(2, exponent);
+    const boundedDelay = Math.min(RETRY_MAX_DELAY_MS, computedDelay);
+
+    return new Date(now.getTime() + boundedDelay).toISOString();
+  }
+
+  private errorMessage(error: unknown): string {
+    let raw = "Stage execution failed";
+
+    if (typeof error === "string" && error.trim().length > 0) {
+      raw = error;
+    } else if (error && typeof error === "object" && "message" in error) {
+      const maybeMessage = (error as { message?: unknown }).message;
+      if (typeof maybeMessage === "string" && maybeMessage.trim().length > 0) {
+        raw = maybeMessage;
+      }
+    }
+
+    return this.redactSensitiveText(raw.trim());
+  }
+
+  private redactSensitiveText(message: string): string {
+    return message
+      .replace(/(Bearer\s+)[^\s]+/gi, "$1[REDACTED]")
+      .replace(/\bsk-[A-Za-z0-9_-]+\b/g, "[REDACTED]")
+      .replace(/\s+/g, " ");
+  }
+
+  private buildFailureMetadata(params: {
+    existingMetadata: string | null;
+    classification: FailureClassification;
+    retryCount: number;
+    message: string;
+    completedAt: string;
+    nextAttemptAt?: string | null;
+    pauseReason?: string;
+  }): Record<string, unknown> {
+    const metadata = this.parseJobMetadata(params.existingMetadata);
+
+    metadata.last_error = params.message;
+    metadata.error_class = params.classification;
+    metadata.retry_count = params.retryCount;
+    metadata.last_failed_at = params.completedAt;
+
+    if (params.nextAttemptAt) {
+      metadata.next_attempt_at = params.nextAttemptAt;
+    } else {
+      delete metadata.next_attempt_at;
+    }
+
+    if (params.pauseReason) {
+      metadata.pause_reason = params.pauseReason;
+    } else {
+      delete metadata.pause_reason;
+    }
+
+    return metadata;
+  }
+
+  private parseJobMetadata(metadata: string | null): Record<string, unknown> {
+    if (!metadata) {
+      return {};
+    }
+
+    try {
+      const parsed = JSON.parse(metadata) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return {};
+      }
+
+      return { ...(parsed as Record<string, unknown>) };
+    } catch {
+      return {};
     }
   }
 

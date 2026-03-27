@@ -45,6 +45,8 @@ export interface JobQueryFilters {
   rhizomeId?: string;
   stage?: PipelineStep;
   status?: JobStatus;
+  readyOnly?: boolean;
+  atTime?: Date | string;
 }
 
 export interface RecordStageLogInput {
@@ -110,8 +112,7 @@ export class JobQueue {
              retry_count, max_retries, created_at, started_at, completed_at, metadata
       FROM jobs
       WHERE status = 'queued'
-      ORDER BY priority DESC, created_at ASC, id ASC
-      LIMIT 1;
+      ORDER BY priority DESC, created_at ASC, id ASC;
       `,
     );
 
@@ -189,8 +190,9 @@ export class JobQueue {
   }
 
   public dequeue(): QueueJob | null {
-    const row = this.dequeueStmt.get() as RawQueueJob | null;
-    return row ? this.toQueueJob(row) : null;
+    const rows = this.dequeueStmt.all() as RawQueueJob[];
+    const jobs = rows.map((row) => this.toQueueJob(row));
+    return jobs.find((job) => this.isRetryEligible(job)) ?? null;
   }
 
   public updateStatus(input: UpdateJobStatusInput): void {
@@ -218,7 +220,13 @@ export class JobQueue {
       filters.status ?? null,
     ) as RawQueueJob[];
 
-    return rows.map((row) => this.toQueueJob(row));
+    const jobs = rows.map((row) => this.toQueueJob(row));
+    if (!filters.readyOnly) {
+      return jobs;
+    }
+
+    const at = filters.atTime ?? new Date();
+    return jobs.filter((job) => this.isRetryEligible(job, at));
   }
 
   public recordStageLog(input: RecordStageLogInput): number {
@@ -255,6 +263,47 @@ export class JobQueue {
 
   private toPatchArg(value: string | null | undefined): string | null {
     return value === undefined ? KEEP_SENTINEL : value;
+  }
+
+  private isRetryEligible(job: QueueJob, atTime: Date | string = new Date()): boolean {
+    if (job.status !== "queued") {
+      return false;
+    }
+
+    const metadata = this.parseMetadata(job.metadata);
+    const nextAttemptRaw = metadata?.next_attempt_at;
+    if (typeof nextAttemptRaw !== "string" || nextAttemptRaw.trim().length === 0) {
+      return true;
+    }
+
+    const nextAttemptMs = Date.parse(nextAttemptRaw);
+    if (Number.isNaN(nextAttemptMs)) {
+      return true;
+    }
+
+    const atMs = typeof atTime === "string" ? Date.parse(atTime) : atTime.getTime();
+    if (Number.isNaN(atMs)) {
+      return true;
+    }
+
+    return nextAttemptMs <= atMs;
+  }
+
+  private parseMetadata(metadata: string | null): Record<string, unknown> | null {
+    if (!metadata) {
+      return null;
+    }
+
+    try {
+      const parsed = JSON.parse(metadata) as unknown;
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        return null;
+      }
+
+      return parsed as Record<string, unknown>;
+    } catch {
+      return null;
+    }
   }
 
   private toQueueJob(row: RawQueueJob): QueueJob {

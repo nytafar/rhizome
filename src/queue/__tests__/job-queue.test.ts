@@ -128,6 +128,62 @@ describe("JobQueue", () => {
     });
   });
 
+  test("dequeue skips queued jobs until next_attempt_at is eligible", async () => {
+    await withDatabase((database) => {
+      insertStudy(database, "SISS-150", "future2024study");
+      insertStudy(database, "SISS-151", "ready2024study");
+
+      const queue = new JobQueue(database.db);
+      queue.enqueue({
+        rhizomeId: "SISS-150",
+        stage: PipelineStep.INGEST,
+        status: "queued",
+        priority: 10,
+        metadata: '{"next_attempt_at":"2099-01-01T00:00:00.000Z"}',
+      });
+      queue.enqueue({
+        rhizomeId: "SISS-151",
+        stage: PipelineStep.INGEST,
+        status: "queued",
+        priority: 1,
+      });
+
+      const next = queue.dequeue();
+      expect(next?.rhizomeId).toBe("SISS-151");
+    });
+  });
+
+  test("query readyOnly includes malformed metadata rows as ready", async () => {
+    await withDatabase((database) => {
+      insertStudy(database, "SISS-160", "malformed2024study");
+      insertStudy(database, "SISS-161", "future2024study");
+
+      const queue = new JobQueue(database.db);
+      queue.enqueue({
+        rhizomeId: "SISS-160",
+        stage: PipelineStep.SUMMARIZE,
+        status: "queued",
+        metadata: "not-json",
+      });
+      queue.enqueue({
+        rhizomeId: "SISS-161",
+        stage: PipelineStep.SUMMARIZE,
+        status: "queued",
+        metadata: '{"next_attempt_at":"2099-01-01T00:00:00.000Z"}',
+      });
+
+      const readyJobs = queue.query({
+        stage: PipelineStep.SUMMARIZE,
+        status: "queued",
+        readyOnly: true,
+        atTime: new Date("2026-01-01T00:00:00.000Z"),
+      });
+
+      expect(readyJobs).toHaveLength(1);
+      expect(readyJobs[0]?.rhizomeId).toBe("SISS-160");
+    });
+  });
+
   test("recordStageLog writes execution entries", async () => {
     await withDatabase((database) => {
       insertStudy(database, "SISS-200", "golf2024study");

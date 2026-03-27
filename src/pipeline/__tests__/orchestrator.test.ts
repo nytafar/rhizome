@@ -413,6 +413,187 @@ describe("PipelineOrchestrator", () => {
     });
   });
 
+  test("transient failures are requeued with backoff metadata and retry increment", async () => {
+    await withDatabase(async (database) => {
+      insertStudy(database, "SISS-011", "retry2026");
+
+      const queue = new JobQueue(database.db);
+      const jobId = queue.enqueue({
+        rhizomeId: "SISS-011",
+        stage: PipelineStep.INGEST,
+        status: "queued",
+        maxRetries: 3,
+        metadata: "{\"attempt\":1}",
+      });
+
+      const now = new Date("2026-03-27T10:00:00.000Z");
+      const orchestrator = new PipelineOrchestrator({
+        db: database.db,
+        queue,
+        now: () => now,
+      });
+
+      orchestrator.registerStageHandler(PipelineStep.INGEST, async () => {
+        throw {
+          message: "network timeout while contacting provider",
+          code: "subprocess_timeout",
+        };
+      });
+
+      const result = await orchestrator.processNonAI();
+      expect(result).toEqual({ processed: 1, succeeded: 0, failed: 1, enqueued: 0 });
+
+      const job = queue.query({ rhizomeId: "SISS-011" }).find((entry) => entry.id === jobId);
+      expect(job?.status).toBe("queued");
+      expect(job?.retryCount).toBe(1);
+      expect(job?.errorClass).toBe("transient");
+      expect(job?.errorMessage).toBe("network timeout while contacting provider");
+
+      const metadata = JSON.parse(job?.metadata ?? "{}") as Record<string, unknown>;
+      expect(metadata.attempt).toBe(1);
+      expect(metadata.error_class).toBe("transient");
+      expect(metadata.retry_count).toBe(1);
+      expect(metadata.last_failed_at).toBe("2026-03-27T10:00:00.000Z");
+      expect(metadata.next_attempt_at).toBe("2026-03-27T10:00:30.000Z");
+      expect(metadata.pause_reason).toBeUndefined();
+
+      const state = readPipelineState(database, "SISS-011");
+      expect(state.overall).toBe(PipelineOverallStatus.NEEDS_ATTENTION);
+      expect(state.steps[PipelineStep.INGEST]?.status).toBe(PipelineStepStatus.FAILED);
+      expect(state.steps[PipelineStep.INGEST]?.retries).toBe(1);
+      expect(state.error).toBe("network timeout while contacting provider");
+    });
+  });
+
+  test("unknown failure class hints are treated as permanent and pause immediately", async () => {
+    await withDatabase(async (database) => {
+      insertStudy(database, "SISS-012", "permanent2026");
+
+      const queue = new JobQueue(database.db);
+      const jobId = queue.enqueue({
+        rhizomeId: "SISS-012",
+        stage: PipelineStep.INGEST,
+        status: "queued",
+      });
+
+      const orchestrator = new PipelineOrchestrator({ db: database.db, queue });
+      orchestrator.registerStageHandler(PipelineStep.INGEST, async () => {
+        throw {
+          message: "invalid response envelope",
+          errorClass: "unknown_hint",
+        };
+      });
+
+      const result = await orchestrator.processNonAI();
+      expect(result).toEqual({ processed: 1, succeeded: 0, failed: 1, enqueued: 0 });
+
+      const job = queue.query({ rhizomeId: "SISS-012" }).find((entry) => entry.id === jobId);
+      expect(job?.status).toBe("paused");
+      expect(job?.retryCount).toBe(1);
+      expect(job?.errorClass).toBe("permanent");
+
+      const metadata = JSON.parse(job?.metadata ?? "{}") as Record<string, unknown>;
+      expect(metadata.pause_reason).toBe("permanent_error");
+      expect(metadata.next_attempt_at).toBeUndefined();
+    });
+  });
+
+  test("transient failures pause when retry count exceeds max_retries", async () => {
+    await withDatabase(async (database) => {
+      insertStudy(database, "SISS-013", "exhausted2026");
+
+      const queue = new JobQueue(database.db);
+      const jobId = queue.enqueue({
+        rhizomeId: "SISS-013",
+        stage: PipelineStep.INGEST,
+        status: "queued",
+        maxRetries: 1,
+      });
+
+      database.db
+        .query("UPDATE jobs SET retry_count = 1 WHERE id = ?;")
+        .run(jobId);
+
+      const orchestrator = new PipelineOrchestrator({ db: database.db, queue });
+      orchestrator.registerStageHandler(PipelineStep.INGEST, async () => {
+        throw new Error("request timeout");
+      });
+
+      const result = await orchestrator.processNonAI();
+      expect(result).toEqual({ processed: 1, succeeded: 0, failed: 1, enqueued: 0 });
+
+      const job = queue.query({ rhizomeId: "SISS-013" }).find((entry) => entry.id === jobId);
+      expect(job?.status).toBe("paused");
+      expect(job?.retryCount).toBe(2);
+      expect(job?.errorClass).toBe("transient");
+
+      const metadata = JSON.parse(job?.metadata ?? "{}") as Record<string, unknown>;
+      expect(metadata.pause_reason).toBe("max_retries_exhausted");
+      expect(metadata.next_attempt_at).toBeUndefined();
+    });
+  });
+
+  test("missing handler pauses job with stable failure metadata", async () => {
+    await withDatabase(async (database) => {
+      insertStudy(database, "SISS-014", "missinghandler2026");
+
+      const queue = new JobQueue(database.db);
+      const jobId = queue.enqueue({
+        rhizomeId: "SISS-014",
+        stage: PipelineStep.INGEST,
+        status: "queued",
+      });
+
+      const orchestrator = new PipelineOrchestrator({ db: database.db, queue });
+
+      const result = await orchestrator.processNonAI();
+      expect(result).toEqual({ processed: 1, succeeded: 0, failed: 1, enqueued: 0 });
+
+      const job = queue.query({ rhizomeId: "SISS-014" }).find((entry) => entry.id === jobId);
+      expect(job?.status).toBe("paused");
+      expect(job?.retryCount).toBe(1);
+      expect(job?.errorClass).toBe("permanent");
+
+      const metadata = JSON.parse(job?.metadata ?? "{}") as Record<string, unknown>;
+      expect(metadata.pause_reason).toBe("handler_missing");
+      expect(metadata.next_attempt_at).toBeUndefined();
+    });
+  });
+
+  test("malformed job metadata is replaced with canonical retry metadata", async () => {
+    await withDatabase(async (database) => {
+      insertStudy(database, "SISS-015", "malformedmeta2026");
+
+      const queue = new JobQueue(database.db);
+      const jobId = queue.enqueue({
+        rhizomeId: "SISS-015",
+        stage: PipelineStep.INGEST,
+        status: "queued",
+        metadata: "not-json",
+      });
+
+      const fixedNow = new Date("2026-03-27T10:00:00.000Z");
+      const orchestrator = new PipelineOrchestrator({
+        db: database.db,
+        queue,
+        now: () => fixedNow,
+      });
+
+      orchestrator.registerStageHandler(PipelineStep.INGEST, async () => {
+        throw new Error("request timeout");
+      });
+
+      await orchestrator.processNonAI();
+
+      const job = queue.query({ rhizomeId: "SISS-015" }).find((entry) => entry.id === jobId);
+      const metadata = JSON.parse(job?.metadata ?? "{}") as Record<string, unknown>;
+      expect(metadata.last_error).toBe("request timeout");
+      expect(metadata.error_class).toBe("transient");
+      expect(metadata.retry_count).toBe(1);
+      expect(metadata.next_attempt_at).toBe("2026-03-27T10:00:30.000Z");
+    });
+  });
+
   test("derivePipelineOverall returns expected aggregate state", () => {
     expect(derivePipelineOverall({})).toBe(PipelineOverallStatus.NOT_STARTED);
 

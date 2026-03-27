@@ -4,6 +4,7 @@ import { runInitCommand, type InitCommandOptions } from "./commands/init";
 import { runSyncZoteroCommand, type SyncCommandOptions } from "./commands/sync";
 import { runProcessCommand, type ProcessCommandOptions } from "./commands/process";
 import { runStatusCommand, type StatusCommandOptions } from "./commands/status";
+import { runRetryCommand, type RetryCommandOptions } from "./commands/retry";
 import {
   runLockStatusCommand,
   runLockClearCommand,
@@ -62,6 +63,20 @@ export function createCliProgram(): Command {
     )
     .action(async (options: ProcessCommandOptions) => {
       await runProcessCommand(options);
+    });
+
+  program
+    .command("retry")
+    .description("Retry failed or paused jobs")
+    .option(
+      "--citekey <key>",
+      "Retry failed/paused jobs for a specific study only (compat selector; planned deprecation after first stable build in favor of rhizome_id/doi/pmid selectors)",
+    )
+    .option("--all-failed", "Retry all failed/paused jobs across studies")
+    .option("--reset-retries", "Reset retry_count to 0 for retried jobs")
+    .option("--json", "Emit machine-readable JSON")
+    .action(async (options: RetryCommandOptions) => {
+      await runRetryCommand(options);
     });
 
   const sync = program.command("sync").description("Sync external sources");
