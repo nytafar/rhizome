@@ -13,6 +13,13 @@ import {
   type LockStatusCommandOptions,
   type LockClearCommandOptions,
 } from "./commands/lock";
+import {
+  runTaxonomyReviewCommand,
+  runTaxonomyApproveCommand,
+  runTaxonomyRejectCommand,
+  type TaxonomyReviewCommandOptions,
+  type TaxonomyDecisionCommandOptions,
+} from "./commands/taxonomy";
 
 export function createCliProgram(): Command {
   const program = new Command();
@@ -140,6 +147,38 @@ export function createCliProgram(): Command {
     .option("--json", "Emit machine-readable JSON")
     .action(async (options: LockClearCommandOptions) => {
       await runLockClearCommand(options);
+    });
+
+  const taxonomy = program.command("taxonomy").description("Review and manage taxonomy proposals");
+
+  taxonomy
+    .command("review")
+    .description("Generate taxonomy review artifact with deterministic proposal IDs")
+    .option("--json", "Emit machine-readable JSON")
+    .action(async (options: TaxonomyReviewCommandOptions) => {
+      await runTaxonomyReviewCommand(options);
+    });
+
+  taxonomy
+    .command("approve")
+    .description("Approve taxonomy proposal by deterministic ID")
+    .requiredOption("--id <proposalId>", "Deterministic proposal ID from taxonomy review")
+    .option("--by <identity>", "Reviewer identity")
+    .option("--rationale <text>", "Decision rationale")
+    .option("--json", "Emit machine-readable JSON")
+    .action(async (options: TaxonomyDecisionCommandOptions) => {
+      await runTaxonomyApproveCommand(options);
+    });
+
+  taxonomy
+    .command("reject")
+    .description("Reject taxonomy proposal by deterministic ID")
+    .requiredOption("--id <proposalId>", "Deterministic proposal ID from taxonomy review")
+    .option("--by <identity>", "Reviewer identity")
+    .option("--rationale <text>", "Decision rationale")
+    .option("--json", "Emit machine-readable JSON")
+    .action(async (options: TaxonomyDecisionCommandOptions) => {
+      await runTaxonomyRejectCommand(options);
     });
 
   return program;

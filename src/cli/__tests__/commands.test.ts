@@ -16,6 +16,11 @@ import { runRetryCommand } from "../commands/retry";
 import { runReprocessCommand } from "../commands/reprocess";
 import { runAuditCommand } from "../commands/audit";
 import { runLockClearCommand, runLockStatusCommand } from "../commands/lock";
+import {
+  runTaxonomyApproveCommand,
+  runTaxonomyRejectCommand,
+  runTaxonomyReviewCommand,
+} from "../commands/taxonomy";
 import { CANONICAL_WORKSPACE_DIR, LEGACY_WORKSPACE_DIR } from "../../config/workspace-contract";
 import type { ZoteroItem } from "../../zotero/client";
 
@@ -2616,6 +2621,180 @@ describe("CLI command handlers", () => {
       const status = await runLockStatusCommand({ json: true }, { cwd: root });
       expect(status.lockPath).toBe(join(root, LEGACY_WORKSPACE_DIR, "locks", "mutator.lock"));
       expect(status.active).toBe(false);
+    });
+  });
+
+  test("taxonomy review writes deterministic artifact with proposal IDs", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const taxonomyPath = makeTaxonomyPath(vaultPath);
+      await mkdir(join(vaultPath, "Research", "_system"), { recursive: true });
+      await writeFile(
+        taxonomyPath,
+        JSON.stringify(
+          {
+            version: 1,
+            groups: {
+              therapeutic_areas: {
+                values: {},
+                pending: {
+                  stress_resilience: {
+                    count: 2,
+                    first_seen_at: "2026-03-27T00:00:00.000Z",
+                    last_seen_at: "2026-03-27T00:00:00.000Z",
+                    sources: ["classifier"],
+                  },
+                },
+              },
+              mechanisms: { values: {}, pending: {} },
+              indications: { values: {}, pending: {} },
+              contraindications: { values: {}, pending: {} },
+              drug_interactions: { values: {}, pending: {} },
+              research_gaps: { values: {}, pending: {} },
+            },
+          },
+          null,
+          2,
+        ) + "\n",
+        "utf8",
+      );
+
+      const result = await runTaxonomyReviewCommand({ json: true }, { cwd: root });
+
+      expect(result.proposals).toHaveLength(1);
+      expect(result.proposals[0]?.proposal_id).toBe(
+        "proposal:therapeutic_areas:rename:stress_resilience",
+      );
+
+      const artifactPath = join(vaultPath, "Research", "_system", "taxonomy_review.md");
+      const markdown = await readFile(artifactPath, "utf8");
+      expect(markdown).toContain("# Taxonomy Review");
+      expect(markdown).toContain("proposal:therapeutic_areas:rename:stress_resilience");
+    });
+  });
+
+  test("taxonomy approve/reject persist decision rows and reject unknown IDs without side effects", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const taxonomyPath = makeTaxonomyPath(vaultPath);
+      await mkdir(join(vaultPath, "Research", "_system"), { recursive: true });
+      await writeFile(
+        taxonomyPath,
+        JSON.stringify(
+          {
+            version: 1,
+            groups: {
+              therapeutic_areas: {
+                values: {},
+                pending: {
+                  stress_resilience: {
+                    count: 2,
+                    first_seen_at: "2026-03-27T00:00:00.000Z",
+                    last_seen_at: "2026-03-27T00:00:00.000Z",
+                    sources: ["classifier"],
+                  },
+                },
+              },
+              mechanisms: { values: {}, pending: {} },
+              indications: { values: {}, pending: {} },
+              contraindications: { values: {}, pending: {} },
+              drug_interactions: { values: {}, pending: {} },
+              research_gaps: { values: {}, pending: {} },
+            },
+          },
+          null,
+          2,
+        ) + "\n",
+        "utf8",
+      );
+
+      await runTaxonomyApproveCommand(
+        {
+          id: "proposal:therapeutic_areas:rename:stress_resilience",
+          by: "qa-user",
+          rationale: "looks good",
+          json: true,
+        },
+        { cwd: root },
+      );
+
+      const dbPath = join(root, CANONICAL_WORKSPACE_DIR, "siss.db");
+      const database = new Database({ path: dbPath });
+      database.init();
+
+      const approvedRow = database.db
+        .query(
+          `
+          SELECT decision_status, decided_by, rationale
+          FROM taxonomy_proposal_decisions
+          WHERE proposal_id = ?
+          LIMIT 1;
+          `,
+        )
+        .get("proposal:therapeutic_areas:rename:stress_resilience") as {
+        decision_status: string;
+        decided_by: string | null;
+        rationale: string | null;
+      };
+
+      expect(approvedRow.decision_status).toBe("approved");
+      expect(approvedRow.decided_by).toBe("qa-user");
+      expect(approvedRow.rationale).toBe("looks good");
+
+      await runTaxonomyRejectCommand(
+        {
+          id: "proposal:therapeutic_areas:rename:stress_resilience",
+          rationale: "not now",
+          json: true,
+        },
+        { cwd: root },
+      );
+
+      const rejectedRow = database.db
+        .query(
+          `
+          SELECT decision_status, rationale
+          FROM taxonomy_proposal_decisions
+          WHERE proposal_id = ?
+          LIMIT 1;
+          `,
+        )
+        .get("proposal:therapeutic_areas:rename:stress_resilience") as {
+        decision_status: string;
+        rationale: string | null;
+      };
+      expect(rejectedRow.decision_status).toBe("rejected");
+      expect(rejectedRow.rationale).toBe("not now");
+
+      const beforeUnknownCount = database.db
+        .query("SELECT COUNT(*) AS count FROM taxonomy_proposal_decisions;")
+        .get() as { count: number };
+
+      await expect(
+        runTaxonomyApproveCommand(
+          {
+            id: "proposal:therapeutic_areas:rename:unknown_value",
+          },
+          { cwd: root },
+        ),
+      ).rejects.toThrow("Unknown proposal id");
+
+      const afterUnknownCount = database.db
+        .query("SELECT COUNT(*) AS count FROM taxonomy_proposal_decisions;")
+        .get() as { count: number };
+
+      expect(afterUnknownCount.count).toBe(beforeUnknownCount.count);
+      database.close();
+    });
+  });
+
+  test("taxonomy approve rejects malformed and empty proposal IDs", async () => {
+    await withTempRhizome(async (root) => {
+      await expect(runTaxonomyApproveCommand({ id: "" }, { cwd: root })).rejects.toThrow(
+        "--id requires a non-empty value",
+      );
+
+      await expect(
+        runTaxonomyApproveCommand({ id: "bad-id" }, { cwd: root }),
+      ).rejects.toThrow("Invalid proposal id");
     });
   });
 });
