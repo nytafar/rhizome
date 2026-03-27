@@ -8,8 +8,12 @@ import {
   PipelineStepStatus,
   type PipelineStepState,
 } from "../types/pipeline";
-import type { StudyRecord } from "../types/study";
-import { buildStudyNoteMarkdown } from "../vault/note-builder";
+import type { StudyRecord, StudyFrontmatterProjection } from "../types/study";
+import {
+  buildStudyNoteMarkdown,
+  USER_PRESERVED_FRONTMATTER_KEYS,
+  type UserPreservedFrontmatterKey,
+} from "../vault/note-builder";
 
 interface VaultPathsConfig {
   research_root: string;
@@ -20,6 +24,7 @@ interface VaultPathsConfig {
 export interface VaultWriteStageInput {
   db: BunSQLiteDatabase;
   study: StudyRecord;
+  existingFrontmatter?: Partial<StudyFrontmatterProjection>;
   vaultPath: string;
   vault: VaultPathsConfig;
   now?: () => Date;
@@ -36,6 +41,8 @@ export interface VaultWriteStageResult {
     stage: PipelineStep.VAULT_WRITE;
     durationMs: number;
     frontmatterValid: true;
+    preservedKeys: UserPreservedFrontmatterKey[];
+    malformedFrontmatter: boolean;
   };
 }
 
@@ -71,9 +78,59 @@ function withVaultWriteStep(study: StudyRecord, updatedAt: string): StudyRecord 
   };
 }
 
+function resolveStudyIdentity(study: StudyRecord): string {
+  return (study as StudyRecord & { rhizome_id?: string }).rhizome_id ?? study.siss_id;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+async function readExistingFrontmatterForMerge(notePath: string): Promise<{
+  frontmatter?: Partial<StudyFrontmatterProjection>;
+  preservedKeys: UserPreservedFrontmatterKey[];
+  malformedFrontmatter: boolean;
+}> {
+  const noteFile = Bun.file(notePath);
+  if (!(await noteFile.exists())) {
+    return { preservedKeys: [], malformedFrontmatter: false };
+  }
+
+  const raw = await noteFile.text();
+
+  if (raw.trim().startsWith("---")) {
+    const split = raw.split("\n");
+    const secondFenceIndex = split.findIndex((line, index) => index > 0 && line.trim() === "---");
+    if (secondFenceIndex === -1) {
+      return { preservedKeys: [], malformedFrontmatter: true };
+    }
+  }
+
+  const parsed = matter(raw);
+  if (!isRecord(parsed.data)) {
+    return { preservedKeys: [], malformedFrontmatter: false };
+  }
+
+  const preservedKeys: UserPreservedFrontmatterKey[] = [];
+  const preservedFrontmatter: Partial<StudyFrontmatterProjection> = {};
+
+  for (const key of USER_PRESERVED_FRONTMATTER_KEYS) {
+    if (key in parsed.data) {
+      preservedKeys.push(key);
+      preservedFrontmatter[key] = parsed.data[key] as never;
+    }
+  }
+
+  return {
+    frontmatter: preservedKeys.length > 0 ? preservedFrontmatter : undefined,
+    preservedKeys,
+    malformedFrontmatter: false,
+  };
+}
+
 function upsertPipelineStepInDb(params: {
   db: BunSQLiteDatabase;
-  sissId: string;
+  rhizomeId: string;
   pipelineSteps: StudyRecord["pipeline_steps"];
   updatedAt: string;
 }): void {
@@ -82,15 +139,15 @@ function upsertPipelineStepInDb(params: {
       `
       UPDATE studies
       SET pipeline_steps_json = ?, updated_at = ?
-      WHERE siss_id = ?;
+      WHERE rhizome_id = ?;
       `,
     )
-    .run(JSON.stringify(params.pipelineSteps), params.updatedAt, params.sissId);
+    .run(JSON.stringify(params.pipelineSteps), params.updatedAt, params.rhizomeId);
 }
 
 function insertJobStageLog(params: {
   db: BunSQLiteDatabase;
-  sissId: string;
+  rhizomeId: string;
   startedAt: string;
   completedAt: string;
   durationMs: number;
@@ -99,12 +156,12 @@ function insertJobStageLog(params: {
   params.db
     .query(
       `
-      INSERT INTO job_stage_log (siss_id, stage, status, started_at, completed_at, duration_ms, metadata)
+      INSERT INTO job_stage_log (rhizome_id, stage, status, started_at, completed_at, duration_ms, metadata)
       VALUES (?, ?, 'completed', ?, ?, ?, ?);
       `,
     )
     .run(
-      params.sissId,
+      params.rhizomeId,
       PipelineStep.VAULT_WRITE,
       params.startedAt,
       params.completedAt,
@@ -142,7 +199,15 @@ export async function runVaultWriteStage(
     asset_dir: `${assetDirRelative}/`,
   };
 
-  const markdown = buildStudyNoteMarkdown(studyWithAssetDir);
+  const existingMerge = input.existingFrontmatter
+    ? {
+        frontmatter: input.existingFrontmatter,
+        preservedKeys: USER_PRESERVED_FRONTMATTER_KEYS.filter((key) => key in input.existingFrontmatter),
+        malformedFrontmatter: false,
+      }
+    : await readExistingFrontmatterForMerge(notePath);
+
+  const markdown = buildStudyNoteMarkdown(studyWithAssetDir, existingMerge.frontmatter);
   const parsedMatter = matter(markdown);
   const frontmatter = parseStudyFrontmatter(parsedMatter.data);
 
@@ -154,14 +219,14 @@ export async function runVaultWriteStage(
 
   upsertPipelineStepInDb({
     db: input.db,
-    sissId: input.study.siss_id,
+    rhizomeId: input.study.rhizome_id,
     pipelineSteps: studyWithAssetDir.pipeline_steps,
     updatedAt: completedAt,
   });
 
   insertJobStageLog({
     db: input.db,
-    sissId: input.study.siss_id,
+    rhizomeId: input.study.rhizome_id,
     startedAt,
     completedAt,
     durationMs,
@@ -169,6 +234,8 @@ export async function runVaultWriteStage(
       note_path: notePathRelative,
       asset_dir: `${assetDirRelative}/`,
       frontmatter_valid: true,
+      preserved_keys: existingMerge.preservedKeys,
+      malformed_frontmatter: existingMerge.malformedFrontmatter,
     },
   });
 
@@ -183,6 +250,8 @@ export async function runVaultWriteStage(
       stage: PipelineStep.VAULT_WRITE,
       durationMs,
       frontmatterValid: true,
+      preservedKeys: existingMerge.preservedKeys,
+      malformedFrontmatter: existingMerge.malformedFrontmatter,
     },
   };
 }

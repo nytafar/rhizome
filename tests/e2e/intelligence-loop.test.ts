@@ -12,6 +12,13 @@ import { runStatusCommand } from "../../src/cli/commands/status";
 import { runLivePreflight } from "./support/live-preflight";
 import { captureSummarizeFailureEvidence } from "./support/evidence";
 import { discoverWorkspaceConfig } from "../../src/config/workspace-contract";
+import { runVaultWriteStage } from "../../src/stages/vault-write";
+import {
+  PipelineOverallStatus,
+  PipelineStep,
+  PipelineStepStatus,
+} from "../../src/types/pipeline";
+import type { StudyRecord } from "../../src/types/study";
 
 const livePreflight = await runLivePreflight();
 if (!livePreflight.ok) {
@@ -48,6 +55,144 @@ function appendEvidence(message: string, evidence: Awaited<ReturnType<typeof cap
 }
 
 describe("intelligence loop e2e", () => {
+  test("preserves user frontmatter fields across repeated vault_write runs", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rhizome-frontmatter-preserve-"));
+
+    try {
+      const vaultPath = join(root, "vault");
+      await mkdir(vaultPath, { recursive: true });
+
+      await runInitCommand(
+        {
+          nonInteractive: true,
+          force: true,
+          vault: vaultPath,
+          researchRoot: "Research",
+          zoteroUser: "0",
+          zoteroKeyEnv: "ZOTERO_API_KEY",
+          unpaywallEmail: "e2e@example.com",
+          aiWindows: "00:00-23:59",
+          timezone: "UTC",
+        },
+        { cwd: root },
+      );
+
+      const workspaceConfig = await discoverWorkspaceConfig(root);
+      if (workspaceConfig.kind === "missing") {
+        throw new Error(workspaceConfig.guidance);
+      }
+
+      const database = new Database({ path: join(workspaceConfig.workspaceDir, "siss.db") });
+      database.init();
+
+      const rhizomeId = "550e8400-e29b-41d4-a716-446655440000";
+      const citekey = "preserve2026demo";
+      const pipelineSteps = {
+        [PipelineStep.INGEST]: {
+          status: PipelineStepStatus.COMPLETE,
+          updated_at: "2026-03-26T21:00:00Z",
+          retries: 0,
+        },
+        [PipelineStep.ZOTERO_SYNC]: {
+          status: PipelineStepStatus.COMPLETE,
+          updated_at: "2026-03-26T21:01:00Z",
+          retries: 0,
+        },
+        [PipelineStep.SUMMARIZE]: {
+          status: PipelineStepStatus.COMPLETE,
+          updated_at: "2026-03-26T21:02:00Z",
+          retries: 0,
+        },
+      };
+
+      database.db
+        .query(
+          `
+          INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+          VALUES (?, ?, ?, ?, ?, ?);
+          `,
+        )
+        .run(
+          rhizomeId,
+          citekey,
+          "manual",
+          "Frontmatter Preserve Baseline",
+          PipelineOverallStatus.IN_PROGRESS,
+          JSON.stringify(pipelineSteps),
+        );
+
+      const baseStudy: StudyRecord = {
+        siss_id: rhizomeId,
+        rhizome_id: rhizomeId,
+        citekey,
+        title: "Frontmatter Preserve Baseline",
+        authors: [{ family: "Tester", given: "E2E" }],
+        year: 2026,
+        pipeline_overall: PipelineOverallStatus.IN_PROGRESS,
+        pipeline_steps: pipelineSteps,
+        pipeline_error: null,
+        source: "manual",
+        source_tags: ["auto-generated"],
+        pdf_available: false,
+        last_pipeline_run: "2026-03-26",
+      };
+
+      const vaultConfig = {
+        research_root: "Research",
+        studies_folder: "studies",
+        assets_folder: "_assets",
+      } as const;
+
+      await runVaultWriteStage({
+        db: database.db,
+        study: baseStudy,
+        vaultPath,
+        vault: vaultConfig,
+      });
+
+      const notePath = join(vaultPath, "Research", "studies", `${citekey}.md`);
+      const firstParsed = matter(await Bun.file(notePath).text());
+      const firstFrontmatter = parseStudyFrontmatter(firstParsed.data);
+      expect(firstFrontmatter.tags).toEqual(["auto-generated"]);
+
+      const editedData = {
+        ...firstParsed.data,
+        tags: ["my-tag", "keep-me"],
+        user_rating: 5,
+        user_status: "reading",
+        notes: "manual annotation",
+        user_note: "[[Research/study-notes/preserve2026demo.note|Notes]]",
+      };
+      await Bun.write(notePath, matter.stringify(firstParsed.content, editedData));
+
+      const secondStudy: StudyRecord = {
+        ...baseStudy,
+        title: "Frontmatter Preserve Updated",
+      };
+
+      await runVaultWriteStage({
+        db: database.db,
+        study: secondStudy,
+        vaultPath,
+        vault: vaultConfig,
+      });
+
+      const secondParsed = matter(await Bun.file(notePath).text());
+      const secondFrontmatter = parseStudyFrontmatter(secondParsed.data);
+
+      expect(secondFrontmatter.title).toBe("Frontmatter Preserve Updated");
+      expect(secondFrontmatter.tags).toEqual(["my-tag", "keep-me"]);
+      expect(secondFrontmatter.user_rating).toBe(5);
+      expect(secondFrontmatter.user_status).toBe("reading");
+      expect(secondFrontmatter.notes).toBe("manual annotation");
+      expect(secondFrontmatter.user_note).toBe("[[Research/study-notes/preserve2026demo.note|Notes]]");
+
+      database.close();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   liveE2ETest(
     liveTestName,
     async () => {
@@ -114,14 +259,14 @@ describe("intelligence loop e2e", () => {
         database.init();
 
         const studies = database.db
-          .query("SELECT citekey FROM studies ORDER BY citekey ASC;")
-          .all() as Array<{ citekey: string }>;
+          .query("SELECT citekey, doi, pmid, rhizome_id FROM studies ORDER BY citekey ASC;")
+          .all() as Array<{ citekey: string; doi: string | null; pmid: string | null; rhizome_id: string }>;
 
         database.close();
 
         expect(studies).toHaveLength(2);
 
-        for (const { citekey } of studies) {
+        for (const { citekey, doi, pmid, rhizome_id } of studies) {
           const notePath = join(vaultPath, "Research", "studies", `${citekey}.md`);
           const noteExists = await Bun.file(notePath).exists();
           expect(noteExists).toBe(true);
@@ -130,7 +275,12 @@ describe("intelligence loop e2e", () => {
           const parsed = matter(noteText);
           const frontmatter = parseStudyFrontmatter(parsed.data);
 
-          expect(frontmatter.citekey).toBe(citekey);
+          expect(frontmatter.note_type).toBe("study");
+          expect(frontmatter.has_summary).toBe(true);
+
+          if (!doi && !pmid) {
+            expect(frontmatter.rhizome_id).toBe(rhizome_id);
+          }
 
           const summaryPath = join(
             vaultPath,

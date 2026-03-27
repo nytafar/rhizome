@@ -11,7 +11,7 @@ import { PipelineStep } from "../types/pipeline";
 import type { Database as BunSQLiteDatabase } from "bun:sqlite";
 
 interface StudyRow {
-  siss_id: string;
+  rhizome_id: string;
   citekey: string;
   doi: string | null;
   pmid: string | null;
@@ -20,7 +20,7 @@ interface StudyRow {
 
 export interface PdfFetchStageInput {
   db: BunSQLiteDatabase;
-  sissId: string;
+  rhizomeId: string;
   assetsRootDir: string;
   sourceOrder: PdfSourceName[];
   maxFileSizeMb: number;
@@ -41,20 +41,20 @@ export interface PdfFetchStageResult {
   };
 }
 
-function loadStudyRow(db: BunSQLiteDatabase, sissId: string): StudyRow {
+function loadStudyRow(db: BunSQLiteDatabase, rhizomeId: string): StudyRow {
   const row = db
     .query(
       `
-      SELECT siss_id, citekey, doi, pmid, zotero_key
+      SELECT rhizome_id, citekey, doi, pmid, zotero_key
       FROM studies
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
       LIMIT 1;
       `,
     )
-    .get(sissId) as StudyRow | null;
+    .get(rhizomeId) as StudyRow | null;
 
   if (!row) {
-    throw new Error(`Study not found for siss_id=${sissId}`);
+    throw new Error(`Study not found for rhizome_id=${rhizomeId}`);
   }
 
   return row;
@@ -78,12 +78,12 @@ async function ensureAssetDir(assetsRootDir: string, citekey: string): Promise<v
 }
 
 export async function runPdfFetchStage(input: PdfFetchStageInput): Promise<PdfFetchStageResult> {
-  const study = loadStudyRow(input.db, input.sissId);
+  const study = loadStudyRow(input.db, input.rhizomeId);
   await ensureAssetDir(input.assetsRootDir, study.citekey);
 
   const fetchResult: PdfFetcherResult = await fetchPdfWithWaterfall({
     study: {
-      sissId: study.siss_id,
+      sissId: study.rhizome_id,
       citekey: study.citekey,
       doi: study.doi,
       pmcid: study.pmid,

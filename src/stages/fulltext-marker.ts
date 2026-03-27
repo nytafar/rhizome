@@ -5,7 +5,7 @@ import type { ParserRegistry } from "../parser/registry";
 import { PipelineStep } from "../types/pipeline";
 
 interface StudyRow {
-  siss_id: string;
+  rhizome_id: string;
   citekey: string;
 }
 
@@ -23,7 +23,7 @@ interface PdfFetchMetadata {
 
 export interface FulltextMarkerStageInput {
   db: BunSQLiteDatabase;
-  sissId: string;
+  rhizomeId: string;
   assetsRootDir: string;
   parserRegistry: Pick<ParserRegistry, "getActive">;
 }
@@ -47,20 +47,20 @@ export interface FulltextMarkerStageResult {
   };
 }
 
-function loadStudyRow(db: BunSQLiteDatabase, sissId: string): StudyRow {
+function loadStudyRow(db: BunSQLiteDatabase, rhizomeId: string): StudyRow {
   const row = db
     .query(
       `
-      SELECT siss_id, citekey
+      SELECT rhizome_id, citekey
       FROM studies
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
       LIMIT 1;
       `,
     )
-    .get(sissId) as StudyRow | null;
+    .get(rhizomeId) as StudyRow | null;
 
   if (!row) {
-    throw new Error(`Study not found for siss_id=${sissId}`);
+    throw new Error(`Study not found for rhizome_id=${rhizomeId}`);
   }
 
   return row;
@@ -68,14 +68,14 @@ function loadStudyRow(db: BunSQLiteDatabase, sissId: string): StudyRow {
 
 function loadLatestCompletedPdfFetchMetadata(
   db: BunSQLiteDatabase,
-  sissId: string,
+  rhizomeId: string,
 ): PdfFetchMetadata | null {
   const row = db
     .query(
       `
       SELECT id, metadata
       FROM jobs
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
         AND stage = ?
         AND status = 'complete'
         AND metadata IS NOT NULL
@@ -83,7 +83,7 @@ function loadLatestCompletedPdfFetchMetadata(
       LIMIT 1;
       `,
     )
-    .get(sissId, PipelineStep.PDF_FETCH) as JobMetadataRow | null;
+    .get(rhizomeId, PipelineStep.PDF_FETCH) as JobMetadataRow | null;
 
   if (!row?.metadata) {
     return null;
@@ -168,8 +168,8 @@ function validateParseResult(result: ParseResult): ParseResult {
 export async function runFulltextMarkerStage(
   input: FulltextMarkerStageInput,
 ): Promise<FulltextMarkerStageResult> {
-  const study = loadStudyRow(input.db, input.sissId);
-  const pdfFetchMetadata = loadLatestCompletedPdfFetchMetadata(input.db, input.sissId);
+  const study = loadStudyRow(input.db, input.rhizomeId);
+  const pdfFetchMetadata = loadLatestCompletedPdfFetchMetadata(input.db, input.rhizomeId);
 
   if (!pdfFetchMetadata?.pdfAvailable || !pdfFetchMetadata.pdfPath) {
     return buildNoPdfResult();

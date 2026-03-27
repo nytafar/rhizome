@@ -4,38 +4,20 @@ import {
   parseStudyFrontmatter,
   safeParseStudyFrontmatter,
 } from "../frontmatter";
-import {
-  PipelineOverallStatus,
-  PipelineStep,
-  PipelineStepStatus,
-} from "../../types/pipeline";
 
 function validFrontmatterFixture() {
   return {
-    siss_id: "550e8400-e29b-41d4-a716-446655440000",
-    citekey: "smith2023ashwagandha",
+    rhizome_id: "550e8400-e29b-41d4-a716-446655440000",
     note_type: "study" as const,
-    pipeline_overall: PipelineOverallStatus.IN_PROGRESS,
-    pipeline_steps: {
-      [PipelineStep.INGEST]: {
-        status: PipelineStepStatus.COMPLETE,
-        updated_at: "2026-03-25T17:20:00Z",
-        retries: 0,
-      },
-      [PipelineStep.ZOTERO_SYNC]: {
-        status: PipelineStepStatus.COMPLETE,
-        updated_at: "2026-03-25T17:20:05Z",
-        retries: 0,
-      },
-      [PipelineStep.FULLTEXT_DOCLING]: {
-        status: PipelineStepStatus.SKIPPED,
-        updated_at: "2026-03-25T17:21:10Z",
-        retries: 0,
-        skip_reason: "provider_disabled",
-      },
-    },
+
+    has_pdf: true,
+    has_fulltext: true,
+    has_summary: true,
+    has_classification: false,
+    pipeline_status: "partial" as const,
     pipeline_error: null,
-    last_pipeline_run: "2026-03-25",
+    last_pipeline_run: "2026-03-26",
+
     title: "Ashwagandha root extract reduces cortisol in chronically stressed adults",
     authors: [
       { family: "Smith", given: "J" },
@@ -45,44 +27,53 @@ function validFrontmatterFixture() {
     journal: "Phytomedicine",
     doi: "10.1016/j.phymed.2023.01.012",
     pmid: "37291847",
-    volume: "112",
-    issue: "4",
-    pages: "155-163",
     item_type: "journalArticle",
+
     zotero_key: "ABC123",
-    zotero_version: 42,
-    zotero_sync_status: "active" as const,
-    source: "zotero",
     source_collections: ["Adaptogens", "Clinical Trials"],
-    source_tags: ["ashwagandha", "cortisol"],
-    date_added: "2026-03-25T17:00:00Z",
-    asset_dir: "Research/studies/_assets/smith2023ashwagandha/",
-    pdf_path: "Research/studies/_assets/smith2023ashwagandha/source.pdf",
+
+    tags: ["ashwagandha", "cortisol"],
+
+    pdf: "[[Research/studies/_assets/smith2023ashwagandha/source.pdf|PDF]]",
+    fulltext: "[[Research/studies/_assets/smith2023ashwagandha/fulltext.md|Fulltext]]",
+    summary: "[[Research/studies/_assets/smith2023ashwagandha/summary.current.md|Summary]]",
+    user_note: null,
     pdf_available: true,
     pdf_source: "unpaywall" as const,
-    fulltext_path: "Research/studies/_assets/smith2023ashwagandha/fulltext.md",
-    summary_path: "Research/studies/_assets/smith2023ashwagandha/summary.current.md",
+
+    summary_skill: "summarizer@1.0.0",
+    classifier_skill: "classifier@1.0.0",
+    summary_generated_at: "2026-03-26T12:00:00Z",
+    classifier_generated_at: "2026-03-26T12:05:00Z",
+    summary_versions: [
+      "[[Research/studies/_assets/smith2023ashwagandha/summary.v1.md|v1]]",
+      "[[Research/studies/_assets/smith2023ashwagandha/summary.current.md|current]]",
+    ],
+
+    user_rating: null,
+    user_priority: null,
+    user_status: null,
+    notes: "",
   };
 }
 
 describe("StudyFrontmatterSchema", () => {
-  test("parses valid frontmatter across tiers 0-3", () => {
+  test("parses valid v0.3 frontmatter shape", () => {
     const fixture = validFrontmatterFixture();
 
     const parsed = parseStudyFrontmatter(fixture);
 
-    expect(parsed.siss_id).toBe(fixture.siss_id);
+    expect(parsed.rhizome_id).toBe(fixture.rhizome_id);
     expect(parsed.note_type).toBe("study");
-    expect(parsed.pipeline_steps[PipelineStep.INGEST]?.status).toBe(
-      PipelineStepStatus.COMPLETE,
-    );
-    expect(parsed.pdf_source).toBe("unpaywall");
+    expect(parsed.pipeline_status).toBe("partial");
+    expect(parsed.has_summary).toBe(true);
+    expect(parsed.summary_skill).toBe("summarizer@1.0.0");
   });
 
   test("safeParse rejects invalid identity and pipeline fields", () => {
     const fixture = validFrontmatterFixture();
-    fixture.siss_id = "not-a-uuid";
-    fixture.pipeline_overall = "bad_status" as PipelineOverallStatus;
+    fixture.rhizome_id = "not-a-uuid";
+    fixture.pipeline_status = "bad_status" as "partial";
 
     const result = safeParseStudyFrontmatter(fixture);
 
@@ -99,12 +90,30 @@ describe("StudyFrontmatterSchema", () => {
     expect(result.success).toBe(false);
   });
 
-  test("safeParse rejects invalid zotero/asset fields", () => {
+  test("safeParse rejects invalid wikilinks and user fields", () => {
     const fixture = validFrontmatterFixture();
-    fixture.zotero_sync_status = "invalid" as "active";
-    fixture.pdf_source = "invalid" as "unpaywall";
+    fixture.summary = "Research/studies/_assets/smith2023ashwagandha/summary.current.md";
+    fixture.user_priority = "urgent" as "high";
 
     const result = safeParseStudyFrontmatter(fixture);
+
+    expect(result.success).toBe(false);
+  });
+
+  test("safeParse rejects removed legacy fields due to strict schema", () => {
+    const legacyShape = {
+      ...validFrontmatterFixture(),
+      citekey: "smith2023ashwagandha",
+      pipeline_steps: {},
+      pipeline_overall: "complete",
+      source_tags: ["legacy"],
+      pdf_path: "Research/studies/_assets/smith2023ashwagandha/source.pdf",
+      volume: "112",
+      issue: "4",
+      pages: "155-163",
+    } as Record<string, unknown>;
+
+    const result = safeParseStudyFrontmatter(legacyShape);
 
     expect(result.success).toBe(false);
   });

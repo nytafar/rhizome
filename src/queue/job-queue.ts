@@ -4,7 +4,7 @@ import type { JobStatus, PipelineStep } from "../types/pipeline";
 const KEEP_SENTINEL = "__KEEP__";
 
 export interface EnqueueJobInput {
-  sissId: string;
+  rhizomeId: string;
   stage: PipelineStep;
   priority?: number;
   status?: JobStatus;
@@ -15,7 +15,7 @@ export interface EnqueueJobInput {
 
 export interface QueueJob {
   id: number;
-  sissId: string;
+  rhizomeId: string;
   stage: PipelineStep;
   status: JobStatus;
   priority: number;
@@ -42,13 +42,13 @@ export interface UpdateJobStatusInput {
 }
 
 export interface JobQueryFilters {
-  sissId?: string;
+  rhizomeId?: string;
   stage?: PipelineStep;
   status?: JobStatus;
 }
 
 export interface RecordStageLogInput {
-  sissId: string;
+  rhizomeId: string;
   stage: PipelineStep;
   status: "started" | "completed" | "failed" | "skipped";
   startedAt?: string | null;
@@ -57,9 +57,23 @@ export interface RecordStageLogInput {
   metadata?: string | null;
 }
 
+export interface RecordPipelineRunInput {
+  rhizomeId: string;
+  runId: string;
+  step: PipelineStep;
+  status: "started" | "completed" | "failed" | "skipped";
+  startedAt?: string | null;
+  completedAt?: string | null;
+  retries?: number;
+  skipReason?: string | null;
+  error?: string | null;
+  model?: string | null;
+  skill?: string | null;
+}
+
 type RawQueueJob = {
   id: number;
-  siss_id: string;
+  rhizome_id: string;
   stage: PipelineStep;
   status: JobStatus;
   priority: number;
@@ -80,18 +94,19 @@ export class JobQueue {
   private readonly updateStatusStmt: Statement;
   private readonly queryJobsStmt: Statement;
   private readonly recordStageLogStmt: Statement;
+  private readonly recordPipelineRunStmt: Statement;
 
   public constructor(private readonly db: BunSQLiteDatabase) {
     this.enqueueStmt = this.db.query(
       `
-      INSERT INTO jobs (siss_id, stage, status, priority, ai_window_required, max_retries, metadata)
+      INSERT INTO jobs (rhizome_id, stage, status, priority, ai_window_required, max_retries, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?);
       `,
     );
 
     this.dequeueStmt = this.db.query(
       `
-      SELECT id, siss_id, stage, status, priority, ai_window_required, error_message, error_class,
+      SELECT id, rhizome_id, stage, status, priority, ai_window_required, error_message, error_class,
              retry_count, max_retries, created_at, started_at, completed_at, metadata
       FROM jobs
       WHERE status = 'queued'
@@ -117,10 +132,10 @@ export class JobQueue {
 
     this.queryJobsStmt = this.db.query(
       `
-      SELECT id, siss_id, stage, status, priority, ai_window_required, error_message, error_class,
+      SELECT id, rhizome_id, stage, status, priority, ai_window_required, error_message, error_class,
              retry_count, max_retries, created_at, started_at, completed_at, metadata
       FROM jobs
-      WHERE (?1 IS NULL OR siss_id = ?1)
+      WHERE (?1 IS NULL OR rhizome_id = ?1)
         AND (?2 IS NULL OR stage = ?2)
         AND (?3 IS NULL OR status = ?3)
       ORDER BY priority DESC, created_at ASC, id ASC;
@@ -129,8 +144,27 @@ export class JobQueue {
 
     this.recordStageLogStmt = this.db.query(
       `
-      INSERT INTO job_stage_log (siss_id, stage, status, started_at, completed_at, duration_ms, metadata)
+      INSERT INTO job_stage_log (rhizome_id, stage, status, started_at, completed_at, duration_ms, metadata)
       VALUES (?, ?, ?, ?, ?, ?, ?);
+      `,
+    );
+
+    this.recordPipelineRunStmt = this.db.query(
+      `
+      INSERT INTO pipeline_runs (
+        rhizome_id,
+        run_id,
+        step,
+        status,
+        started_at,
+        completed_at,
+        retries,
+        skip_reason,
+        error,
+        model,
+        skill
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `,
     );
   }
@@ -142,7 +176,7 @@ export class JobQueue {
     const maxRetries = input.maxRetries ?? 3;
 
     const result = this.enqueueStmt.run(
-      input.sissId,
+      input.rhizomeId,
       input.stage,
       status,
       priority,
@@ -179,7 +213,7 @@ export class JobQueue {
 
   public query(filters: JobQueryFilters): QueueJob[] {
     const rows = this.queryJobsStmt.all(
-      filters.sissId ?? null,
+      filters.rhizomeId ?? null,
       filters.stage ?? null,
       filters.status ?? null,
     ) as RawQueueJob[];
@@ -189,13 +223,31 @@ export class JobQueue {
 
   public recordStageLog(input: RecordStageLogInput): number {
     const result = this.recordStageLogStmt.run(
-      input.sissId,
+      input.rhizomeId,
       input.stage,
       input.status,
       input.startedAt ?? null,
       input.completedAt ?? null,
       input.durationMs ?? null,
       input.metadata ?? null,
+    ) as { lastInsertRowid: number | bigint };
+
+    return Number(result.lastInsertRowid);
+  }
+
+  public recordPipelineRun(input: RecordPipelineRunInput): number {
+    const result = this.recordPipelineRunStmt.run(
+      input.rhizomeId,
+      input.runId,
+      input.step,
+      input.status,
+      input.startedAt ?? null,
+      input.completedAt ?? null,
+      input.retries ?? 0,
+      input.skipReason ?? null,
+      input.error ?? null,
+      input.model ?? null,
+      input.skill ?? null,
     ) as { lastInsertRowid: number | bigint };
 
     return Number(result.lastInsertRowid);
@@ -208,7 +260,7 @@ export class JobQueue {
   private toQueueJob(row: RawQueueJob): QueueJob {
     return {
       id: row.id,
-      sissId: row.siss_id,
+      rhizomeId: row.rhizome_id,
       stage: row.stage,
       status: row.status,
       priority: row.priority,

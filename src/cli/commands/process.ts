@@ -31,11 +31,17 @@ interface SummarizeStudyRow {
 }
 
 interface VaultWriteStudyRow {
-  siss_id: string;
+  rhizome_id: string;
   citekey: string;
   title: string | null;
   doi: string | null;
   pmid: string | null;
+  zotero_key: string | null;
+  zotero_version: number | null;
+  zotero_sync_status: string | null;
+  removed_upstream_at: string | null;
+  removed_upstream_reason: string | null;
+  source_collections_json: string | null;
   source: string;
   pipeline_overall: string;
   pipeline_error: string | null;
@@ -45,6 +51,7 @@ interface VaultWriteStudyRow {
 export interface ProcessCommandOptions {
   ai?: boolean;
   batch?: number;
+  citekey?: string;
 }
 
 export interface ProcessCommandResult {
@@ -60,6 +67,14 @@ export interface ProcessCommandDeps {
   loadConfigFn?: (configPath: string) => Promise<RhizomeConfig>;
   onEvent?: (event: PipelineOrchestratorEvent) => void;
   summarizeStageRunner?: SummarizeStageRunner;
+}
+
+function normalizeCitekeyOption(citekey: string): string {
+  const normalized = citekey.trim();
+  if (normalized.length === 0) {
+    throw new Error("--citekey requires a non-empty value");
+  }
+  return normalized;
 }
 
 function resolveDbPath(cwd: string, config: RhizomeConfig): string {
@@ -97,23 +112,47 @@ function buildCommandLabel(options: ProcessCommandOptions): string {
   if (typeof options.batch === "number") {
     parts.push(`--batch ${options.batch}`);
   }
+  if (typeof options.citekey === "string") {
+    parts.push(`--citekey ${normalizeCitekeyOption(options.citekey)}`);
+  }
   return parts.join(" ");
 }
 
-function loadStudyForSummarize(db: BunSQLiteDatabase, sissId: string): SummarizeStudyRow {
+function resolveRhizomeIdByCitekey(db: BunSQLiteDatabase, citekey: string): string {
+  const normalized = normalizeCitekeyOption(citekey);
+
+  const row = db
+    .query(
+      `
+      SELECT rhizome_id
+      FROM studies
+      WHERE citekey = ?
+      LIMIT 1;
+      `,
+    )
+    .get(normalized) as { rhizome_id: string } | null;
+
+  if (!row) {
+    throw new Error(`Study not found for citekey=${normalized}`);
+  }
+
+  return row.rhizome_id;
+}
+
+function loadStudyForSummarize(db: BunSQLiteDatabase, rhizomeId: string): SummarizeStudyRow {
   const row = db
     .query(
       `
       SELECT citekey, title, doi, pmid
       FROM studies
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
       LIMIT 1;
       `,
     )
-    .get(sissId) as SummarizeStudyRow | null;
+    .get(rhizomeId) as SummarizeStudyRow | null;
 
   if (!row) {
-    throw new Error(`Study not found for siss_id=${sissId}`);
+    throw new Error(`Study not found for rhizome_id=${rhizomeId}`);
   }
 
   return row;
@@ -144,9 +183,22 @@ function parseStringArray(value: unknown): string[] | undefined {
   return normalized.length > 0 ? normalized : undefined;
 }
 
+function parseStringArrayJson(value: string | null | undefined): string[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(value) as unknown;
+    return parseStringArray(parsed);
+  } catch {
+    return undefined;
+  }
+}
+
 function extractSummaryPathFromJobMetadata(
   db: BunSQLiteDatabase,
-  sissId: string,
+  rhizomeId: string,
   vaultPath: string,
 ): string | undefined {
   const row = db
@@ -154,7 +206,7 @@ function extractSummaryPathFromJobMetadata(
       `
       SELECT metadata
       FROM jobs
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
         AND stage = ?
         AND status = 'complete'
         AND metadata IS NOT NULL
@@ -162,7 +214,7 @@ function extractSummaryPathFromJobMetadata(
       LIMIT 1;
       `,
     )
-    .get(sissId, PipelineStep.SUMMARIZE) as { metadata: string } | null;
+    .get(rhizomeId, PipelineStep.SUMMARIZE) as { metadata: string } | null;
 
   if (!row?.metadata) {
     return undefined;
@@ -185,9 +237,30 @@ function extractSummaryPathFromJobMetadata(
   }
 }
 
+function findLastPipelineRunDate(db: BunSQLiteDatabase, rhizomeId: string): string | undefined {
+  const row = db
+    .query(
+      `
+      SELECT completed_at, started_at
+      FROM pipeline_runs
+      WHERE rhizome_id = ?
+      ORDER BY id DESC
+      LIMIT 1;
+      `,
+    )
+    .get(rhizomeId) as { completed_at: string | null; started_at: string | null } | null;
+
+  const candidate = row?.completed_at ?? row?.started_at;
+  if (!candidate || candidate.length < 10) {
+    return undefined;
+  }
+
+  return candidate.slice(0, 10);
+}
+
 function extractPdfFetchMetadataFromJobMetadata(
   db: BunSQLiteDatabase,
-  sissId: string,
+  rhizomeId: string,
   vaultPath: string,
 ): { pdfAvailable: boolean; pdfSource?: StudyRecord["pdf_source"]; pdfPath?: string } {
   const row = db
@@ -195,7 +268,7 @@ function extractPdfFetchMetadataFromJobMetadata(
       `
       SELECT metadata
       FROM jobs
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
         AND stage = ?
         AND status = 'complete'
         AND metadata IS NOT NULL
@@ -203,7 +276,7 @@ function extractPdfFetchMetadataFromJobMetadata(
       LIMIT 1;
       `,
     )
-    .get(sissId, PipelineStep.PDF_FETCH) as { metadata: string } | null;
+    .get(rhizomeId, PipelineStep.PDF_FETCH) as { metadata: string } | null;
 
   if (!row?.metadata) {
     return { pdfAvailable: false };
@@ -242,7 +315,7 @@ function extractPdfFetchMetadataFromJobMetadata(
 
 function extractFulltextPathFromJobMetadata(
   db: BunSQLiteDatabase,
-  sissId: string,
+  rhizomeId: string,
   vaultPath: string,
 ): string | undefined {
   const row = db
@@ -250,7 +323,7 @@ function extractFulltextPathFromJobMetadata(
       `
       SELECT metadata
       FROM jobs
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
         AND stage = ?
         AND status = 'complete'
         AND metadata IS NOT NULL
@@ -258,7 +331,7 @@ function extractFulltextPathFromJobMetadata(
       LIMIT 1;
       `,
     )
-    .get(sissId, PipelineStep.FULLTEXT_MARKER) as { metadata: string } | null;
+    .get(rhizomeId, PipelineStep.FULLTEXT_MARKER) as { metadata: string } | null;
 
   if (!row?.metadata) {
     return undefined;
@@ -297,7 +370,7 @@ function resolvePathWithinVault(vaultPath: string, candidatePath: string): strin
 
 async function loadFulltextMarkdownForSummarize(
   db: BunSQLiteDatabase,
-  sissId: string,
+  rhizomeId: string,
   vaultPath: string,
 ): Promise<string | undefined> {
   const row = db
@@ -305,7 +378,7 @@ async function loadFulltextMarkdownForSummarize(
       `
       SELECT metadata
       FROM jobs
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
         AND stage = ?
         AND status = 'complete'
         AND metadata IS NOT NULL
@@ -313,7 +386,7 @@ async function loadFulltextMarkdownForSummarize(
       LIMIT 1;
       `,
     )
-    .get(sissId, PipelineStep.FULLTEXT_MARKER) as { metadata: string } | null;
+    .get(rhizomeId, PipelineStep.FULLTEXT_MARKER) as { metadata: string } | null;
 
   if (!row?.metadata) {
     return undefined;
@@ -361,7 +434,7 @@ function normalizePipelineOverall(value: string): PipelineOverallStatus {
 
 function loadStudyForVaultWrite(params: {
   db: BunSQLiteDatabase;
-  sissId: string;
+  rhizomeId: string;
   config: RhizomeConfig;
   now: () => Date;
 }): StudyRecord {
@@ -369,72 +442,73 @@ function loadStudyForVaultWrite(params: {
     .query(
       `
       SELECT
-        siss_id,
+        rhizome_id,
         citekey,
         title,
         doi,
         pmid,
+        zotero_key,
+        zotero_version,
+        zotero_sync_status,
+        removed_upstream_at,
+        removed_upstream_reason,
+        source_collections_json,
         source,
         pipeline_overall,
         pipeline_error,
         pipeline_steps_json
       FROM studies
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
       LIMIT 1;
       `,
     )
-    .get(params.sissId) as VaultWriteStudyRow | null;
+    .get(params.rhizomeId) as VaultWriteStudyRow | null;
 
   if (!row) {
-    throw new Error(`Study not found for siss_id=${params.sissId}`);
+    throw new Error(`Study not found for rhizome_id=${params.rhizomeId}`);
   }
 
   const pipelineSteps = parsePipelineSteps(row.pipeline_steps_json);
-  const zoteroSyncStep = pipelineSteps[PipelineStep.ZOTERO_SYNC] as Record<string, unknown> | undefined;
-  const summaryPath = extractSummaryPathFromJobMetadata(params.db, row.siss_id, params.config.vault.path);
+  const summaryPath = extractSummaryPathFromJobMetadata(params.db, row.rhizome_id, params.config.vault.path);
   const fulltextPath = extractFulltextPathFromJobMetadata(
     params.db,
-    row.siss_id,
+    row.rhizome_id,
     params.config.vault.path,
   );
   const pdfMetadata = extractPdfFetchMetadataFromJobMetadata(
     params.db,
-    row.siss_id,
+    row.rhizome_id,
     params.config.vault.path,
   );
+  const lastPipelineRun =
+    findLastPipelineRunDate(params.db, row.rhizome_id) ?? params.now().toISOString().slice(0, 10);
 
   return {
-    siss_id: row.siss_id,
+    siss_id: row.rhizome_id,
+    rhizome_id: row.rhizome_id,
     citekey: row.citekey,
     title: row.title?.trim() || "Untitled study",
     authors: [{ family: "Unknown", given: "Unknown" }],
     year: params.now().getUTCFullYear(),
     doi: row.doi ?? undefined,
     pmid: row.pmid ?? undefined,
-    zotero_key: typeof zoteroSyncStep?.zotero_key === "string" ? zoteroSyncStep.zotero_key : undefined,
-    zotero_version:
-      typeof zoteroSyncStep?.zotero_version === "number" ? zoteroSyncStep.zotero_version : undefined,
+    zotero_key: row.zotero_key ?? undefined,
+    zotero_version: row.zotero_version ?? undefined,
     zotero_sync_status:
-      zoteroSyncStep?.zotero_sync_status === "removed_upstream" ? "removed_upstream" : "active",
-    removed_upstream_at:
-      typeof zoteroSyncStep?.removed_upstream_at === "string"
-        ? zoteroSyncStep.removed_upstream_at
-        : null,
-    removed_upstream_reason:
-      typeof zoteroSyncStep?.removed_upstream_reason === "string"
-        ? zoteroSyncStep.removed_upstream_reason
-        : null,
+      row.zotero_sync_status === "removed_upstream" ? "removed_upstream" : "active",
+    removed_upstream_at: row.removed_upstream_at ?? null,
+    removed_upstream_reason: row.removed_upstream_reason ?? null,
     pipeline_overall: normalizePipelineOverall(row.pipeline_overall),
     pipeline_steps: pipelineSteps,
     pipeline_error: row.pipeline_error,
     source: row.source,
-    source_collections: parseStringArray(zoteroSyncStep?.source_collections),
+    source_collections: parseStringArrayJson(row.source_collections_json),
     fulltext_path: fulltextPath,
     summary_path: summaryPath,
     pdf_available: pdfMetadata.pdfAvailable,
     pdf_source: pdfMetadata.pdfSource,
     pdf_path: pdfMetadata.pdfPath,
-    last_pipeline_run: params.now().toISOString().slice(0, 10),
+    last_pipeline_run: lastPipelineRun,
   };
 }
 
@@ -496,7 +570,7 @@ function registerBuiltInStageHandlers(
   orchestrator.registerStageHandler(PipelineStep.PDF_FETCH, async ({ job }) => {
     const result = await runPdfFetchStage({
       db: params.db,
-      sissId: job.sissId,
+      rhizomeId: job.rhizomeId,
       assetsRootDir,
       sourceOrder: params.config.pdf.sources,
       maxFileSizeMb: params.config.pdf.max_file_size_mb,
@@ -510,7 +584,7 @@ function registerBuiltInStageHandlers(
   orchestrator.registerStageHandler(PipelineStep.FULLTEXT_MARKER, async ({ job }) => {
     const result = await runFulltextMarkerStage({
       db: params.db,
-      sissId: job.sissId,
+      rhizomeId: job.rhizomeId,
       assetsRootDir,
       parserRegistry,
     });
@@ -521,10 +595,10 @@ function registerBuiltInStageHandlers(
   });
 
   orchestrator.registerStageHandler(PipelineStep.SUMMARIZE, async ({ job }) => {
-    const study = loadStudyForSummarize(params.db, job.sissId);
+    const study = loadStudyForSummarize(params.db, job.rhizomeId);
     const fulltextMarkdown = await loadFulltextMarkdownForSummarize(
       params.db,
-      job.sissId,
+      job.rhizomeId,
       params.config.vault.path,
     );
 
@@ -561,7 +635,7 @@ function registerBuiltInStageHandlers(
   orchestrator.registerStageHandler(PipelineStep.VAULT_WRITE, async ({ job }) => {
     const study = loadStudyForVaultWrite({
       db: params.db,
-      sissId: job.sissId,
+      rhizomeId: job.rhizomeId,
       config: params.config,
       now: params.now,
     });
@@ -622,8 +696,14 @@ export async function runProcessCommand(
   }
 
   try {
+    const targetRhizomeId =
+      typeof options.citekey === "string"
+        ? resolveRhizomeIdByCitekey(database.db, options.citekey)
+        : undefined;
+
     const orchestrator = new PipelineOrchestrator({
       db: database.db,
+      targetRhizomeId,
       onEvent: deps.onEvent,
     });
 

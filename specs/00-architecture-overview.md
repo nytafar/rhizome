@@ -17,7 +17,7 @@ It is **not** a web service, not an always-on daemon (in MVP), and not an MCP se
 1. **Zotero is metadata master.** Bibliographic truth lives in Zotero.
 2. **Vault is intelligence master.** Summaries, classifications, user notes, and knowledge links live in Obsidian.
 3. **All vault operations are file-based.** Obsidian never needs to be running.
-4. **`siss_id` is the immutable primary key.** Citekeys are derived, mutable aliases. (Resolves F07)
+4. **`rhizome_id` is the immutable primary key.** Citekeys are derived, mutable aliases. (Resolves F07)
 5. **Pipeline stages are independently rerunnable.** Any stage can fail, retry, or be selectively rerun without affecting others.
 6. **AI processing is time-windowed.** Claude Code invocations respect configurable usage windows.
 7. **Everything is auditable.** Every state transition is logged in SQLite with optional markdown export.
@@ -377,7 +377,7 @@ These stages exist in the design but are **not active in MVP**:
 | F04: Python sidecar (Marker) | `uv` managed, pinned version, healthcheck. Provider interface for future parsers. (Section 4) |
 | F05: Zotero sync state | Explicit schema in spec 02 + spec 03 |
 | F06: Timezone/DST | Addressed in spec 02 (AI windows) |
-| F07: Citekey mutability | `siss_id` is immutable PK, citekey is derived alias (Section 2) |
+| F07: Citekey mutability | `rhizome_id` is immutable PK, citekey is derived alias (Section 2) |
 | F08: Taxonomy propagation safety | Transaction-backed batches in spec 06 |
 | F09: Sci-Hub compliance | Removed from MVP, plugin/extension later |
 | F10: Config versioning | `config_version` + migrator (Section 6) |

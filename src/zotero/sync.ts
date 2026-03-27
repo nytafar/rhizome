@@ -9,11 +9,12 @@ interface ZoteroSyncStateRow {
 }
 
 interface StudyRow {
-  siss_id: string;
+  rhizome_id: string;
   citekey: string;
   doi: string | null;
   pmid: string | null;
   zotero_key: string | null;
+  zotero_version: number | null;
   pipeline_steps_json: string;
 }
 
@@ -34,9 +35,9 @@ export interface ZoteroSyncOptions {
 
 export type ZoteroSyncEvent =
   | { type: "start"; fromVersion: number; full: boolean }
-  | { type: "new"; sissId: string; zoteroKey: string }
-  | { type: "updated"; sissId: string; zoteroKey: string }
-  | { type: "removed_upstream"; sissId: string; zoteroKey: string }
+  | { type: "new"; rhizomeId: string; zoteroKey: string }
+  | { type: "updated"; rhizomeId: string; zoteroKey: string }
+  | { type: "removed_upstream"; rhizomeId: string; zoteroKey: string }
   | { type: "finish"; toVersion: number; syncedItems: number; newItems: number; updatedItems: number };
 
 export interface ZoteroSyncResult {
@@ -98,15 +99,15 @@ export async function syncZoteroDelta(params: {
 
       if (outcome === "new") {
         newItems += 1;
-        const sissId = findSissIdByZoteroKey(db, mapped.zotero_key);
-        if (sissId) {
-          options.onEvent?.({ type: "new", sissId, zoteroKey: mapped.zotero_key });
+        const rhizomeId = findRhizomeIdByZoteroKey(db, mapped.zotero_key);
+        if (rhizomeId) {
+          options.onEvent?.({ type: "new", rhizomeId, zoteroKey: mapped.zotero_key });
         }
       } else if (outcome === "updated") {
         updatedItems += 1;
-        const sissId = findSissIdByZoteroKey(db, mapped.zotero_key);
-        if (sissId) {
-          options.onEvent?.({ type: "updated", sissId, zoteroKey: mapped.zotero_key });
+        const rhizomeId = findRhizomeIdByZoteroKey(db, mapped.zotero_key);
+        if (rhizomeId) {
+          options.onEvent?.({ type: "updated", rhizomeId, zoteroKey: mapped.zotero_key });
         }
       } else {
         skippedItems += 1;
@@ -123,10 +124,10 @@ export async function syncZoteroDelta(params: {
     highestSeenVersion = Math.max(highestSeenVersion, deletedLibraryVersion);
 
     for (const key of deletedKeys) {
-      const sissId = markRemovedUpstream(db, key, startedAt);
-      if (sissId) {
+      const rhizomeId = markRemovedUpstream(db, key, startedAt);
+      if (rhizomeId) {
         deletedFlagged += 1;
-        options.onEvent?.({ type: "removed_upstream", sissId, zoteroKey: key });
+        options.onEvent?.({ type: "removed_upstream", rhizomeId, zoteroKey: key });
       }
     }
 
@@ -175,47 +176,55 @@ function upsertMappedStudy(
   nowIso: string,
 ): "new" | "updated" | "skipped" {
   const existing = findExistingStudy(db, mapped);
-  const existingZoteroVersion = getStoredZoteroVersion(existing?.pipeline_steps_json ?? null);
+  const existingZoteroVersion = existing?.zotero_version ?? null;
 
   if (existing && existing.zotero_key === mapped.zotero_key && existingZoteroVersion === mapped.zotero_version) {
     return "skipped";
   }
 
   if (!existing) {
-    const sissId = crypto.randomUUID();
+    const rhizomeId = crypto.randomUUID();
     const citekey = buildUniqueCitekey(db, mapped);
     const pipelineStepsJson = buildPipelineStepsJson({
       previousJson: "{}",
-      zoteroVersion: mapped.zotero_version,
       nowIso,
       sourceCollections: mapped.source_collections,
-      removedUpstream: null,
     });
 
     db.query(
       `
       INSERT INTO studies (
-        siss_id,
+        rhizome_id,
         citekey,
         title,
         doi,
         pmid,
         zotero_key,
+        zotero_version,
+        zotero_sync_status,
+        removed_upstream_at,
+        removed_upstream_reason,
+        source_collections_json,
         source,
         pipeline_overall,
         pipeline_steps_json,
         created_at,
         updated_at
       )
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
       `,
     ).run(
-      sissId,
+      rhizomeId,
       citekey,
       mapped.title,
       mapped.doi ?? null,
       mapped.pmid ?? null,
       mapped.zotero_key,
+      mapped.zotero_version,
+      "active",
+      null,
+      null,
+      serializeStringArray(mapped.source_collections),
       "zotero",
       PipelineOverallStatus.NOT_STARTED,
       pipelineStepsJson,
@@ -223,16 +232,14 @@ function upsertMappedStudy(
       nowIso,
     );
 
-    enqueueIfNotActive(db, sissId, PipelineStep.INGEST);
+    enqueueIfNotActive(db, rhizomeId, PipelineStep.INGEST);
     return "new";
   }
 
   const pipelineStepsJson = buildPipelineStepsJson({
     previousJson: existing.pipeline_steps_json,
-    zoteroVersion: mapped.zotero_version,
     nowIso,
     sourceCollections: mapped.source_collections,
-    removedUpstream: null,
   });
 
   db.query(
@@ -243,23 +250,33 @@ function upsertMappedStudy(
       doi = ?,
       pmid = ?,
       zotero_key = ?,
+      zotero_version = ?,
+      zotero_sync_status = ?,
+      removed_upstream_at = ?,
+      removed_upstream_reason = ?,
+      source_collections_json = ?,
       source = ?,
       pipeline_steps_json = ?,
       updated_at = ?
-    WHERE siss_id = ?;
+    WHERE rhizome_id = ?;
     `,
   ).run(
     mapped.title,
     mapped.doi ?? null,
     mapped.pmid ?? null,
     mapped.zotero_key,
+    mapped.zotero_version,
+    "active",
+    null,
+    null,
+    serializeStringArray(mapped.source_collections),
     "zotero",
     pipelineStepsJson,
     nowIso,
-    existing.siss_id,
+    existing.rhizome_id,
   );
 
-  enqueueIfNotActive(db, existing.siss_id, PipelineStep.ZOTERO_SYNC);
+  enqueueIfNotActive(db, existing.rhizome_id, PipelineStep.ZOTERO_SYNC);
   return "updated";
 }
 
@@ -267,7 +284,7 @@ function findExistingStudy(db: BunSQLiteDatabase, mapped: MappedStudyRecord): St
   const byZoteroKey = db
     .query(
       `
-      SELECT siss_id, citekey, doi, pmid, zotero_key, pipeline_steps_json
+      SELECT rhizome_id, citekey, doi, pmid, zotero_key, zotero_version, pipeline_steps_json
       FROM studies
       WHERE zotero_key = ?
       LIMIT 1;
@@ -283,7 +300,7 @@ function findExistingStudy(db: BunSQLiteDatabase, mapped: MappedStudyRecord): St
     const byDoi = db
       .query(
         `
-        SELECT siss_id, citekey, doi, pmid, zotero_key, pipeline_steps_json
+        SELECT rhizome_id, citekey, doi, pmid, zotero_key, zotero_version, pipeline_steps_json
         FROM studies
         WHERE lower(doi) = lower(?)
         LIMIT 1;
@@ -300,7 +317,7 @@ function findExistingStudy(db: BunSQLiteDatabase, mapped: MappedStudyRecord): St
     const byPmid = db
       .query(
         `
-        SELECT siss_id, citekey, doi, pmid, zotero_key, pipeline_steps_json
+        SELECT rhizome_id, citekey, doi, pmid, zotero_key, zotero_version, pipeline_steps_json
         FROM studies
         WHERE pmid = ?
         LIMIT 1;
@@ -329,19 +346,19 @@ function buildUniqueCitekey(db: BunSQLiteDatabase, mapped: MappedStudyRecord): s
   );
 }
 
-function enqueueIfNotActive(db: BunSQLiteDatabase, sissId: string, stage: PipelineStep): void {
+function enqueueIfNotActive(db: BunSQLiteDatabase, rhizomeId: string, stage: PipelineStep): void {
   const active = db
     .query(
       `
       SELECT id
       FROM jobs
-      WHERE siss_id = ?
+      WHERE rhizome_id = ?
         AND stage = ?
         AND status IN ('queued', 'processing')
       LIMIT 1;
       `,
     )
-    .get(sissId, stage) as { id: number } | null;
+    .get(rhizomeId, stage) as { id: number } | null;
 
   if (active) {
     return;
@@ -349,23 +366,23 @@ function enqueueIfNotActive(db: BunSQLiteDatabase, sissId: string, stage: Pipeli
 
   db.query(
     `
-    INSERT INTO jobs (siss_id, stage, status, priority, ai_window_required)
+    INSERT INTO jobs (rhizome_id, stage, status, priority, ai_window_required)
     VALUES (?, ?, 'queued', 0, false);
     `,
-  ).run(sissId, stage);
+  ).run(rhizomeId, stage);
 }
 
 function markRemovedUpstream(db: BunSQLiteDatabase, zoteroKey: string, nowIso: string): string | null {
   const existing = db
     .query(
       `
-      SELECT siss_id, pipeline_steps_json
+      SELECT rhizome_id, pipeline_steps_json
       FROM studies
       WHERE zotero_key = ?
       LIMIT 1;
       `,
     )
-    .get(zoteroKey) as Pick<StudyRow, "siss_id" | "pipeline_steps_json"> | null;
+    .get(zoteroKey) as Pick<StudyRow, "rhizome_id" | "pipeline_steps_json"> | null;
 
   if (!existing) {
     return null;
@@ -373,55 +390,30 @@ function markRemovedUpstream(db: BunSQLiteDatabase, zoteroKey: string, nowIso: s
 
   const pipelineStepsJson = buildPipelineStepsJson({
     previousJson: existing.pipeline_steps_json,
-    zoteroVersion: getStoredZoteroVersion(existing.pipeline_steps_json),
     nowIso,
     sourceCollections: undefined,
-    removedUpstream: {
-      at: nowIso,
-      reason: "deleted in Zotero",
-    },
   });
 
   db.query(
     `
     UPDATE studies
-    SET pipeline_steps_json = ?, updated_at = ?
-    WHERE siss_id = ?;
+    SET
+      zotero_sync_status = ?,
+      removed_upstream_at = ?,
+      removed_upstream_reason = ?,
+      pipeline_steps_json = ?,
+      updated_at = ?
+    WHERE rhizome_id = ?;
     `,
-  ).run(pipelineStepsJson, nowIso, existing.siss_id);
+  ).run("removed_upstream", nowIso, "deleted in Zotero", pipelineStepsJson, nowIso, existing.rhizome_id);
 
-  return existing.siss_id;
-}
-
-function getStoredZoteroVersion(pipelineStepsJson: string | null): number {
-  if (!pipelineStepsJson) {
-    return 0;
-  }
-
-  try {
-    const parsed = JSON.parse(pipelineStepsJson) as Record<string, unknown>;
-    const stepValue = parsed[PipelineStep.ZOTERO_SYNC];
-    if (!stepValue || typeof stepValue !== "object") {
-      return 0;
-    }
-
-    const maybeVersion = (stepValue as Record<string, unknown>).zotero_version;
-    if (typeof maybeVersion === "number" && Number.isFinite(maybeVersion)) {
-      return maybeVersion;
-    }
-
-    return 0;
-  } catch {
-    return 0;
-  }
+  return existing.rhizome_id;
 }
 
 function buildPipelineStepsJson(params: {
   previousJson: string;
-  zoteroVersion: number;
   nowIso: string;
   sourceCollections: string[] | undefined;
-  removedUpstream: { at: string; reason: string } | null;
 }): string {
   const base = parseJsonObject(params.previousJson);
 
@@ -430,15 +422,19 @@ function buildPipelineStepsJson(params: {
     status: "complete",
     updated_at: params.nowIso,
     retries: 0,
-    zotero_version: params.zoteroVersion,
-    zotero_sync_status: params.removedUpstream ? "removed_upstream" : "active",
-    removed_upstream_at: params.removedUpstream?.at ?? null,
-    removed_upstream_reason: params.removedUpstream?.reason ?? null,
     source_collections: params.sourceCollections,
   };
 
   base[PipelineStep.ZOTERO_SYNC] = nextStep;
   return JSON.stringify(base);
+}
+
+function serializeStringArray(values: string[] | undefined): string | null {
+  if (!values || values.length === 0) {
+    return null;
+  }
+
+  return JSON.stringify(values);
 }
 
 function parseJsonObject(raw: string): Record<string, unknown> {
@@ -546,12 +542,12 @@ function passesCollectionFilter(
   );
 }
 
-function findSissIdByZoteroKey(db: BunSQLiteDatabase, zoteroKey: string): string | null {
+function findRhizomeIdByZoteroKey(db: BunSQLiteDatabase, zoteroKey: string): string | null {
   const row = db
-    .query("SELECT siss_id FROM studies WHERE zotero_key = ? LIMIT 1;")
-    .get(zoteroKey) as { siss_id: string } | null;
+    .query("SELECT rhizome_id FROM studies WHERE zotero_key = ? LIMIT 1;")
+    .get(zoteroKey) as { rhizome_id: string } | null;
 
-  return row?.siss_id ?? null;
+  return row?.rhizome_id ?? null;
 }
 
 function normalizeDeletedResult(

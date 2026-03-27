@@ -83,7 +83,7 @@ CREATE INDEX idx_studies_pmid ON studies(pmid);
 CREATE INDEX idx_studies_zotero ON studies(zotero_key);
 ```
 
-> **v0.3 note:** `siss_id` renamed to `rhizome_id`. Zotero ops fields (`zotero_version`, `zotero_sync_status`) moved from `pipeline_steps_json` to proper columns. Tombstone fields replace the `removed_upstream_*` fields that were previously embedded in step JSON.
+> **v0.3 note:** Primary key is `rhizome_id`. Zotero ops fields (`zotero_version`, `zotero_sync_status`) moved from `pipeline_steps_json` to proper columns. Tombstone fields replace the `removed_upstream_*` fields that were previously embedded in step JSON.
 
 ### `jobs` table (queue)
 ```sql
