@@ -22,6 +22,7 @@ import {
   runTaxonomyRejectCommand,
   runTaxonomyReviewCommand,
 } from "../commands/taxonomy";
+import { createCliProgram } from "../index";
 import { CANONICAL_WORKSPACE_DIR, LEGACY_WORKSPACE_DIR } from "../../config/workspace-contract";
 import type { ZoteroItem } from "../../zotero/client";
 
@@ -252,6 +253,53 @@ function buildStubClassifyResultWithProvisional(
 
 function makeTaxonomyPath(vaultPath: string): string {
   return join(vaultPath, "Research", "_system", "taxonomy.json");
+}
+
+async function writeTaxonomyFixture(params: {
+  vaultPath: string;
+  therapeuticPending?: Record<string, { count: number }>;
+  mechanismPending?: Record<string, { count: number }>;
+}): Promise<void> {
+  const therapeuticPending = params.therapeuticPending ?? {};
+  const mechanismPending = params.mechanismPending ?? {};
+
+  const makePending = (count: number) => ({
+    count,
+    first_seen_at: "2026-03-27T00:00:00.000Z",
+    last_seen_at: "2026-03-27T00:00:00.000Z",
+    sources: ["classifier"],
+  });
+
+  await mkdir(join(params.vaultPath, "Research", "_system"), { recursive: true });
+  await writeFile(
+    makeTaxonomyPath(params.vaultPath),
+    JSON.stringify(
+      {
+        version: 1,
+        groups: {
+          therapeutic_areas: {
+            values: {},
+            pending: Object.fromEntries(
+              Object.entries(therapeuticPending).map(([value, entry]) => [value, makePending(entry.count)]),
+            ),
+          },
+          mechanisms: {
+            values: {},
+            pending: Object.fromEntries(
+              Object.entries(mechanismPending).map(([value, entry]) => [value, makePending(entry.count)]),
+            ),
+          },
+          indications: { values: {}, pending: {} },
+          contraindications: { values: {}, pending: {} },
+          drug_interactions: { values: {}, pending: {} },
+          research_gaps: { values: {}, pending: {} },
+        },
+      },
+      null,
+      2,
+    ) + "\n",
+    "utf8",
+  );
 }
 
 function seedRetryStudy(params: {
@@ -3009,6 +3057,151 @@ describe("CLI command handlers", () => {
     });
   });
 
+  test("taxonomy review -> approve/reject -> apply cycle stays idempotent across resume reruns", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      await writeTaxonomyFixture({
+        vaultPath,
+        therapeuticPending: {
+          stress_resilience: { count: 2 },
+          sleep_quality: { count: 1 },
+        },
+      });
+
+      await mkdir(join(vaultPath, "Research", "studies"), { recursive: true });
+      const studyPath = join(vaultPath, "Research", "studies", "lane2026cycle.md");
+      await writeFile(
+        studyPath,
+        matter.stringify("# Study\n", {
+          note_type: "study",
+          has_pdf: false,
+          has_fulltext: false,
+          has_summary: false,
+          has_classification: true,
+          pipeline_status: "partial",
+          title: "Cycle test",
+          authors: [{ family: "Lane", given: "A" }],
+          year: 2026,
+          pdf_available: false,
+          tier_6_taxonomy: {
+            therapeutic_areas: ["stress_resilience", "sleep_quality"],
+            mechanisms: [],
+            indications: [],
+            contraindications: [],
+            drug_interactions: [],
+            research_gaps: [],
+          },
+          tier_7_provisional: [
+            {
+              group: "therapeutic_areas",
+              value: "new:stress_resilience",
+              confidence: 0.8,
+              proposed_by: "classifier",
+              logged_at: "2026-03-27T00:00:00.000Z",
+            },
+            {
+              group: "therapeutic_areas",
+              value: "new:sleep_quality",
+              confidence: 0.7,
+              proposed_by: "classifier",
+              logged_at: "2026-03-27T00:00:00.000Z",
+            },
+          ],
+        }),
+        "utf8",
+      );
+
+      const review = await runTaxonomyReviewCommand({ json: true }, { cwd: root });
+      expect(review.proposals).toHaveLength(2);
+
+      await runTaxonomyApproveCommand(
+        { id: "proposal:therapeutic_areas:rename:stress_resilience", json: true },
+        { cwd: root },
+      );
+      await runTaxonomyRejectCommand(
+        { id: "proposal:therapeutic_areas:rename:sleep_quality", json: true },
+        { cwd: root },
+      );
+
+      const applyOnce = await runTaxonomyApplyCommand({ json: true }, { cwd: root });
+      expect(applyOnce.decisionCount).toBe(1);
+      expect(applyOnce.completed).toBe(1);
+      expect(applyOnce.skipped).toBe(0);
+
+      const applyTwice = await runTaxonomyApplyCommand({ json: true }, { cwd: root });
+      expect(applyTwice.decisionCount).toBe(1);
+      expect(applyTwice.completed).toBe(0);
+      expect(applyTwice.skipped).toBe(1);
+
+      const resumeAfterComplete = await runTaxonomyApplyCommand({ resume: true, json: true }, { cwd: root });
+      expect(resumeAfterComplete.decisionCount).toBe(1);
+      expect(resumeAfterComplete.completed).toBe(0);
+      expect(resumeAfterComplete.skipped).toBe(1);
+
+      const parsed = matter(await readFile(studyPath, "utf8"));
+      const frontmatter = parseStudyFrontmatter(parsed.data);
+      expect(frontmatter.tier_6_taxonomy?.therapeutic_areas).toEqual(["stress_resilience", "sleep_quality"]);
+      expect(frontmatter.tier_7_provisional?.map((entry) => entry.value)).toEqual(["new:sleep_quality"]);
+    });
+  });
+
+  test("taxonomy mutating commands respect writer lock contention with holder diagnostics", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      await writeTaxonomyFixture({
+        vaultPath,
+        therapeuticPending: {
+          stress_resilience: { count: 1 },
+        },
+      });
+
+      const lockPath = join(root, CANONICAL_WORKSPACE_DIR, "locks", "mutator.lock");
+      const lock = new WriterLock({ lockPath });
+      await lock.acquire("rhizome process --ai", 4242);
+
+      await expect(
+        runTaxonomyApproveCommand(
+          { id: "proposal:therapeutic_areas:rename:stress_resilience" },
+          { cwd: root },
+        ),
+      ).rejects.toThrow("writer already active");
+      await expect(
+        runTaxonomyApproveCommand(
+          { id: "proposal:therapeutic_areas:rename:stress_resilience" },
+          { cwd: root },
+        ),
+      ).rejects.toThrow("pid=4242");
+
+      await expect(
+        runTaxonomyRejectCommand(
+          { id: "proposal:therapeutic_areas:rename:stress_resilience" },
+          { cwd: root },
+        ),
+      ).rejects.toThrow("command=rhizome process --ai");
+
+      await expect(runTaxonomyApplyCommand({ json: true }, { cwd: root })).rejects.toThrow(
+        "writer already active",
+      );
+
+      await lock.release();
+    });
+  });
+
+  test("taxonomy CLI wiring exposes reject subcommand and enforces required --id", () => {
+    const program = createCliProgram();
+    const taxonomyCommand = program.commands.find((command) => command.name() === "taxonomy");
+    expect(taxonomyCommand).toBeDefined();
+    expect(taxonomyCommand?.commands.map((command) => command.name()).sort()).toEqual([
+      "apply",
+      "approve",
+      "reject",
+      "review",
+    ]);
+
+    const rejectCommand = taxonomyCommand?.commands.find((command) => command.name() === "reject");
+    expect(rejectCommand).toBeDefined();
+    expect(
+      rejectCommand?.options.some((option) => option.required && option.long === "--id"),
+    ).toBe(true);
+  });
   test("taxonomy approve rejects malformed and empty proposal IDs", async () => {
     await withTempRhizome(async (root) => {
       await expect(runTaxonomyApproveCommand({ id: "" }, { cwd: root })).rejects.toThrow(

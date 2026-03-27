@@ -173,6 +173,17 @@ export function createCliProgram(): Command {
     });
 
   taxonomy
+    .command("reject")
+    .description("Reject taxonomy proposal by deterministic ID")
+    .requiredOption("--id <proposalId>", "Deterministic proposal ID from taxonomy review")
+    .option("--by <identity>", "Reviewer identity")
+    .option("--rationale <text>", "Decision rationale")
+    .option("--json", "Emit machine-readable JSON")
+    .action(async (options: TaxonomyDecisionCommandOptions) => {
+      await runTaxonomyRejectCommand(options);
+    });
+
+  taxonomy
     .command("apply")
     .description("Apply approved taxonomy decisions to taxonomy state and study notes")
     .option("--resume", "Resume from checkpoint errors/in-progress state")
