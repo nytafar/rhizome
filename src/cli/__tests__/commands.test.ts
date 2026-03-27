@@ -499,6 +499,16 @@ describe("CLI command handlers", () => {
         )
         .get(PipelineStep.SUMMARIZE) as { count: number };
 
+      const fulltextMarkerComplete = database.db
+        .query(
+          `
+          SELECT COUNT(*) AS count
+          FROM jobs
+          WHERE stage = ? AND status = 'complete';
+          `,
+        )
+        .get(PipelineStep.FULLTEXT_MARKER) as { count: number };
+
       const pdfFetchMetadataRow = database.db
         .query(
           `
@@ -526,6 +536,7 @@ describe("CLI command handlers", () => {
       database.close();
 
       expect(summarizeQueued.count).toBe(1);
+      expect(fulltextMarkerComplete.count).toBe(1);
       expect(pdfFetchMetadataRow).toBeDefined();
       expect(fulltextMarkerMetadataRow).toBeDefined();
       const pdfFetchMetadata = JSON.parse(pdfFetchMetadataRow?.metadata ?? "{}") as {

@@ -199,7 +199,12 @@ describe("PipelineOrchestrator", () => {
       });
 
       const nonAiResult = await orchestrator.processNonAI();
-      expect(nonAiResult.processed).toBe(4);
+      expect(nonAiResult).toEqual({
+        processed: 4,
+        succeeded: 4,
+        failed: 0,
+        enqueued: 4,
+      });
 
       expect(callOrder).toEqual([
         PipelineStep.INGEST,
@@ -210,6 +215,13 @@ describe("PipelineOrchestrator", () => {
 
       const queued = queue.query({ sissId: "SISS-004", status: "queued" }).map((job) => job.stage);
       expect(queued).toEqual([PipelineStep.SUMMARIZE]);
+
+      const fulltextQueued = queue.query({
+        sissId: "SISS-004",
+        stage: PipelineStep.FULLTEXT_MARKER,
+        status: "queued",
+      });
+      expect(fulltextQueued).toHaveLength(0);
     });
   });
 

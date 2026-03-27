@@ -152,6 +152,49 @@ describe("runFulltextMarkerStage", () => {
     database.close();
   });
 
+  test("treats pdf_fetch metadata with missing pdfPath as no-PDF skip branch", async () => {
+    const root = await makeTempDir("rhizome-fulltext-marker-");
+    const database = new Database({ path: join(root, "rhizome.sqlite") });
+    database.init();
+
+    const sissId = "550e8400-e29b-41d4-a716-446655440038";
+    insertStudy(database, sissId, "doe2026missingpdfpath");
+
+    insertPdfFetchJob(database, sissId, {
+      stage: PipelineStep.PDF_FETCH,
+      pdfAvailable: true,
+      pdfSource: "unpaywall",
+    });
+
+    const registry = createRegistry({
+      id: "marker",
+      name: "Marker PDF",
+      async parse() {
+        throw new Error("parse should not be called when pdfPath is missing");
+      },
+      async healthcheck() {
+        return true;
+      },
+    });
+
+    const result = await runFulltextMarkerStage({
+      db: database.db,
+      sissId,
+      assetsRootDir: join(root, "assets"),
+      parserRegistry: registry,
+    });
+
+    expect(result.skipped).toBe(true);
+    expect(result.reason).toBe("no_pdf");
+    expect(result.metadata).toEqual({
+      stage: PipelineStep.FULLTEXT_MARKER,
+      skipped: true,
+      reason: "no_pdf",
+    });
+
+    database.close();
+  });
+
   test("calls active parser provider when pdf_fetch reports an available pdf", async () => {
     const root = await makeTempDir("rhizome-fulltext-marker-");
     const database = new Database({ path: join(root, "rhizome.sqlite") });

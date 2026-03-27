@@ -141,6 +141,54 @@ describe("runSummarizeStage", () => {
     expect(captured.input).toContain("Detailed full text.");
   });
 
+  test("preserves abstract_only source when fulltext is present but model declines to use it", async () => {
+    const root = await makeTempDir("rhizome-summarize-");
+    const captured: { input?: string } = {};
+
+    const invoke: InvokeStub = async (options) => {
+      captured.input = options.input;
+      return {
+        exitCode: 0,
+        stderr: "",
+        durationMs: 850,
+        stdout: JSON.stringify({
+          source: "abstract_only",
+          tldr: "Abstract-only output.",
+          background: "Background",
+          methods: "Methods",
+          key_findings: "Findings",
+          clinical_relevance: "Relevance",
+          limitations: "Limitations",
+        }),
+      };
+    };
+
+    const result = await runSummarizeStage({
+      study: {
+        citekey: "doe2026modelabstract",
+        title: "Model abstract-only decision",
+        authors: [{ given: "John", family: "Doe" }],
+        year: 2026,
+        abstract: "Abstract summary.",
+      },
+      fulltextMarkdown: "# Full Text\nDetailed body that may be ignored.",
+      assetsRootDir: join(root, "_assets"),
+      skillsDir: ".siss/skills",
+      summarizerSkillFile: "summarizer.md",
+      skillVersion: "1.0",
+      model: "claude-opus-4-5",
+      maxTurns: 10,
+      timeoutMs: 30_000,
+      invoke,
+    });
+
+    expect(result.output.source).toBe("abstract_only");
+    expect(result.metadata.source).toBe("abstract_only");
+    expect(result.metadata.usedFulltext).toBe(true);
+    expect(captured.input).toContain("# Full Text");
+    expect(captured.input).toContain("Detailed body that may be ignored.");
+  });
+
   test("treats whitespace-only fulltext markdown as abstract-only fallback", async () => {
     const root = await makeTempDir("rhizome-summarize-");
     const captured: { input?: string } = {};
