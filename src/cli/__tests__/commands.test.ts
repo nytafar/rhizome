@@ -223,6 +223,27 @@ function buildStubClassifyResult(citekey: string, vaultPath: string) {
   };
 }
 
+function buildStubClassifyResultWithProvisional(
+  citekey: string,
+  vaultPath: string,
+  tier7Provisional: Array<{ group: string; value: string; confidence: number }>,
+) {
+  const base = buildStubClassifyResult(citekey, vaultPath);
+  return {
+    ...base,
+    output: {
+      ...base.output,
+      tier_7_provisional: tier7Provisional,
+    },
+    metadata: {
+      ...base.metadata,
+      provisionalCount: tier7Provisional.length,
+      provisional: tier7Provisional,
+      tier_7_provisional: tier7Provisional,
+    },
+  };
+}
+
 function seedRetryStudy(params: {
   database: Database;
   rhizomeId: string;
@@ -577,6 +598,279 @@ describe("CLI command handlers", () => {
       verifyDb.close();
 
       expect(remainingQueued.count).toBe(0);
+    });
+  });
+
+  test("process --ai persists classify provisional boundaries (empty vs multiple new:) into metadata and frontmatter", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440037",
+        citekey: "lane2026provempty",
+        title: "Provisional empty",
+      });
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440038",
+        citekey: "lane2026provmulti",
+        title: "Provisional multiple",
+      });
+
+      database.close();
+
+      const result = await runProcessCommand(
+        { ai: true, batch: 4 },
+        {
+          cwd: root,
+          loadConfigFn: async (configPath) => {
+            const config = await loadConfig(configPath);
+            return {
+              ...config,
+              ai: {
+                ...config.ai,
+                windows: ["00:00-23:59"],
+                timezone: "UTC",
+                batch_size: 2,
+                cooldown_seconds: 0,
+              },
+            };
+          },
+          summarizeStageRunner: async (input) => ({
+            summaryPath: join(
+              vaultPath,
+              "Research",
+              "studies",
+              "_assets",
+              input.study.citekey,
+              "summary.current.md",
+            ),
+            markdown: "# Summary\n",
+            output: {
+              source: "abstract_only",
+              tldr: "TLDR",
+              background: "Background",
+              methods: "Methods",
+              key_findings: "Findings",
+              clinical_relevance: "Relevance",
+              limitations: "Limitations",
+            },
+            metadata: {
+              stage: PipelineStep.SUMMARIZE,
+              durationMs: 1,
+              model: "stub-model",
+              skillVersion: "v1",
+              source: "abstract_only",
+              usedFulltext: false,
+            },
+          }),
+          classifyStageRunner: async (input) =>
+            input.study.citekey === "lane2026provmulti"
+              ? buildStubClassifyResultWithProvisional(input.study.citekey, vaultPath, [
+                  { group: "mechanisms", value: "new:hpa_axis_resilience", confidence: 0.73 },
+                  { group: "therapeutic_areas", value: "new:stress_recovery", confidence: 0.66 },
+                ])
+              : buildStubClassifyResult(input.study.citekey, vaultPath),
+        },
+      );
+
+      expect(result.mode).toBe("ai");
+      expect(result.result.processed).toBe(6);
+      expect(result.result.failed).toBe(0);
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+
+      const classifyRows = verifyDb.db
+        .query(
+          `
+          SELECT s.citekey AS citekey, j.metadata AS metadata
+          FROM jobs j
+          INNER JOIN studies s ON s.rhizome_id = j.rhizome_id
+          WHERE j.stage = ? AND j.status = 'complete'
+          ORDER BY s.citekey ASC;
+          `,
+        )
+        .all(PipelineStep.CLASSIFY) as Array<{ citekey: string; metadata: string }>;
+
+      verifyDb.close();
+
+      const metadataByCitekey = new Map(
+        classifyRows.map((row) => [row.citekey, JSON.parse(row.metadata) as Record<string, unknown>]),
+      );
+
+      const emptyMetadata = metadataByCitekey.get("lane2026provempty");
+      const multiMetadata = metadataByCitekey.get("lane2026provmulti");
+
+      expect(emptyMetadata?.provisional_count).toBe(0);
+      expect(emptyMetadata?.tier_7_provisional).toEqual([]);
+      expect(multiMetadata?.provisional_count).toBe(2);
+      expect((multiMetadata?.tier_7_provisional as unknown[] | undefined)?.length).toBe(2);
+
+      const emptyNotePath = join(vaultPath, "Research", "studies", "lane2026provempty.md");
+      const multiNotePath = join(vaultPath, "Research", "studies", "lane2026provmulti.md");
+
+      const emptyFrontmatter = parseStudyFrontmatter(matter(await readFile(emptyNotePath, "utf8")).data);
+      const multiFrontmatter = parseStudyFrontmatter(matter(await readFile(multiNotePath, "utf8")).data);
+
+      expect(emptyFrontmatter.has_classification).toBe(true);
+      expect(emptyFrontmatter.tier_7_provisional).toEqual([]);
+      expect(emptyFrontmatter.taxonomy_provisional).toBeUndefined();
+
+      expect(multiFrontmatter.has_classification).toBe(true);
+      expect(multiFrontmatter.tier_7_provisional?.map((entry) => entry.value)).toEqual([
+        "new:hpa_axis_resilience",
+        "new:stress_recovery",
+      ]);
+    });
+  });
+
+  test("process --ai records diagnosable classify failure metadata for malformed fixed-field output", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      const rhizomeId = "550e8400-e29b-41d4-a716-446655440039";
+      seedAiSummarizeStudy({
+        database,
+        rhizomeId,
+        citekey: "lane2026classifymalformed",
+        title: "Malformed classify fixed fields",
+      });
+
+      database.close();
+
+      const result = await runProcessCommand(
+        { ai: true, batch: 2 },
+        {
+          cwd: root,
+          loadConfigFn: async (configPath) => {
+            const config = await loadConfig(configPath);
+            return {
+              ...config,
+              ai: {
+                ...config.ai,
+                windows: ["00:00-23:59"],
+                timezone: "UTC",
+                batch_size: 1,
+                cooldown_seconds: 0,
+              },
+            };
+          },
+          summarizeStageRunner: async (input) => ({
+            summaryPath: join(
+              vaultPath,
+              "Research",
+              "studies",
+              "_assets",
+              input.study.citekey,
+              "summary.current.md",
+            ),
+            markdown: "# Summary\n",
+            output: {
+              source: "abstract_only",
+              tldr: "TLDR",
+              background: "Background",
+              methods: "Methods",
+              key_findings: "Findings",
+              clinical_relevance: "Relevance",
+              limitations: "Limitations",
+            },
+            metadata: {
+              stage: PipelineStep.SUMMARIZE,
+              durationMs: 1,
+              model: "stub-model",
+              skillVersion: "v1",
+              source: "abstract_only",
+              usedFulltext: false,
+            },
+          }),
+          classifyStageRunner: async () => {
+            throw {
+              message: "Classifier output missing required fixed fields: tier_4.control",
+              code: "classifier_output_missing_fixed_fields",
+              errorClass: "permanent",
+            };
+          },
+        },
+      );
+
+      expect(result.mode).toBe("ai");
+      expect(result.result.processed).toBe(2);
+      expect(result.result.succeeded).toBe(1);
+      expect(result.result.failed).toBe(1);
+
+      const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      verifyDb.init();
+
+      const classifyJob = verifyDb.db
+        .query(
+          `
+          SELECT status, error_class, error_message, retry_count, metadata
+          FROM jobs
+          WHERE rhizome_id = ? AND stage = ?
+          ORDER BY id DESC
+          LIMIT 1;
+          `,
+        )
+        .get(rhizomeId, PipelineStep.CLASSIFY) as {
+        status: string;
+        error_class: string | null;
+        error_message: string | null;
+        retry_count: number;
+        metadata: string | null;
+      };
+
+      const vaultWriteCount = verifyDb.db
+        .query(
+          `
+          SELECT COUNT(*) AS count
+          FROM jobs
+          WHERE rhizome_id = ? AND stage = ? AND status = 'complete';
+          `,
+        )
+        .get(rhizomeId, PipelineStep.VAULT_WRITE) as { count: number };
+
+      const pipeline = verifyDb.db
+        .query(
+          `
+          SELECT pipeline_overall, pipeline_steps_json
+          FROM studies
+          WHERE rhizome_id = ?
+          LIMIT 1;
+          `,
+        )
+        .get(rhizomeId) as { pipeline_overall: string; pipeline_steps_json: string };
+
+      verifyDb.close();
+
+      const classifyMetadata = JSON.parse(classifyJob.metadata ?? "{}") as Record<string, unknown>;
+      const pipelineSteps = JSON.parse(pipeline.pipeline_steps_json) as Record<
+        string,
+        { status?: string; retries?: number; error?: string }
+      >;
+
+      expect(classifyJob.status).toBe("paused");
+      expect(classifyJob.error_class).toBe("permanent");
+      expect(classifyJob.error_message).toBe(
+        "Classifier output missing required fixed fields: tier_4.control",
+      );
+      expect(classifyJob.retry_count).toBe(1);
+      expect(classifyMetadata.error_class).toBe("permanent");
+      expect(classifyMetadata.pause_reason).toBe("permanent_error");
+      expect(classifyMetadata.last_error).toBe(
+        "Classifier output missing required fixed fields: tier_4.control",
+      );
+
+      expect(vaultWriteCount.count).toBe(0);
+      expect(pipeline.pipeline_overall).toBe(PipelineOverallStatus.NEEDS_ATTENTION);
+      expect(pipelineSteps[PipelineStep.CLASSIFY]?.status).toBe(PipelineStepStatus.FAILED);
+      expect(pipelineSteps[PipelineStep.CLASSIFY]?.retries).toBe(1);
+      expect(pipelineSteps[PipelineStep.CLASSIFY]?.error).toBe(
+        "Classifier output missing required fixed fields: tier_4.control",
+      );
     });
   });
 
