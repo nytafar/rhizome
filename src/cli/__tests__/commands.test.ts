@@ -265,7 +265,7 @@ describe("CLI command handlers", () => {
     });
   });
 
-  test("process vault_write uses pdf_fetch metadata for downstream note frontmatter", async () => {
+  test("process vault_write maps completed fulltext.marker and pdf_fetch metadata into note frontmatter", async () => {
     await withTempRhizome(async (root, vaultPath) => {
       const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
       database.init();
@@ -315,11 +315,14 @@ describe("CLI command handlers", () => {
       const summaryAbsolutePath = join(vaultPath, "Research", "studies", "_assets", citekey, "summary.current.md");
       await Bun.write(summaryAbsolutePath, "# Summary\n");
 
+      const fulltextAbsolutePath = join(vaultPath, "Research", "studies", "_assets", citekey, "fulltext.md");
+      await Bun.write(fulltextAbsolutePath, "---\nnote_type: study_fulltext\n---\n\n# Full text\n");
+
       database.db
         .query(
           `
           INSERT INTO jobs (siss_id, stage, status, metadata)
-          VALUES (?, ?, 'complete', ?), (?, ?, 'complete', ?), (?, ?, 'queued', NULL);
+          VALUES (?, ?, 'complete', ?), (?, ?, 'complete', ?), (?, ?, 'complete', ?), (?, ?, 'queued', NULL);
           `,
         )
         .run(
@@ -331,6 +334,14 @@ describe("CLI command handlers", () => {
             pdfSource: "unpaywall",
             pdfPath: pdfAbsolutePath,
             attempts: [{ source: "unpaywall", outcome: "success" }],
+          }),
+          sissId,
+          PipelineStep.FULLTEXT_MARKER,
+          JSON.stringify({
+            stage: PipelineStep.FULLTEXT_MARKER,
+            skipped: false,
+            fulltextPath: fulltextAbsolutePath,
+            provider: "marker",
           }),
           sissId,
           PipelineStep.SUMMARIZE,
@@ -352,9 +363,105 @@ describe("CLI command handlers", () => {
       expect(frontmatter.pdf_available).toBe(true);
       expect(frontmatter.pdf_source).toBe("unpaywall");
       expect(frontmatter.pdf_path).toBe(pdfRelativePath);
+      expect(frontmatter.fulltext_path).toBe(
+        "Research/studies/_assets/lane2026pdfmeta/fulltext.md",
+      );
       expect(frontmatter.summary_path).toBe(
         "Research/studies/_assets/lane2026pdfmeta/summary.current.md",
       );
+    });
+  });
+
+  test("process vault_write ignores malformed fulltext.marker metadata without crashing", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      const sissId = "550e8400-e29b-41d4-a716-446655440021";
+      const citekey = "lane2026fulltextmalformed";
+      const pipelineSteps = {
+        [PipelineStep.INGEST]: {
+          status: PipelineStepStatus.COMPLETE,
+          updated_at: "2026-03-26T10:00:00.000Z",
+          retries: 0,
+        },
+        [PipelineStep.ZOTERO_SYNC]: {
+          status: PipelineStepStatus.COMPLETE,
+          updated_at: "2026-03-26T10:01:00.000Z",
+          retries: 0,
+        },
+        [PipelineStep.PDF_FETCH]: {
+          status: PipelineStepStatus.COMPLETE,
+          updated_at: "2026-03-26T10:02:00.000Z",
+          retries: 0,
+        },
+      };
+
+      database.db
+        .query(
+          `
+          INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json, doi)
+          VALUES (?, ?, ?, ?, ?, ?, ?);
+          `,
+        )
+        .run(
+          sissId,
+          citekey,
+          "zotero",
+          "Malformed fulltext metadata",
+          PipelineOverallStatus.IN_PROGRESS,
+          JSON.stringify(pipelineSteps),
+          "10.1000/example.meta.bad",
+        );
+
+      const pdfRelativePath = "Research/studies/_assets/lane2026fulltextmalformed/paper.pdf";
+      const pdfAbsolutePath = join(vaultPath, pdfRelativePath);
+      await mkdir(join(vaultPath, "Research", "studies", "_assets", citekey), { recursive: true });
+      await Bun.write(pdfAbsolutePath, "%PDF-1.1\nbad-meta\n");
+
+      const summaryAbsolutePath = join(vaultPath, "Research", "studies", "_assets", citekey, "summary.current.md");
+      await Bun.write(summaryAbsolutePath, "# Summary\n");
+
+      database.db
+        .query(
+          `
+          INSERT INTO jobs (siss_id, stage, status, metadata)
+          VALUES (?, ?, 'complete', ?), (?, ?, 'complete', ?), (?, ?, 'complete', ?), (?, ?, 'queued', NULL);
+          `,
+        )
+        .run(
+          sissId,
+          PipelineStep.PDF_FETCH,
+          JSON.stringify({
+            stage: PipelineStep.PDF_FETCH,
+            pdfAvailable: true,
+            pdfSource: "unpaywall",
+            pdfPath: pdfAbsolutePath,
+            attempts: [{ source: "unpaywall", outcome: "success" }],
+          }),
+          sissId,
+          PipelineStep.FULLTEXT_MARKER,
+          "{not-json}",
+          sissId,
+          PipelineStep.SUMMARIZE,
+          JSON.stringify({ summaryPath: summaryAbsolutePath, source: "abstract_only" }),
+          sissId,
+          PipelineStep.VAULT_WRITE,
+        );
+
+      database.close();
+
+      const result = await runProcessCommand({ ai: false }, { cwd: root });
+      expect(result.mode).toBe("non_ai");
+      expect(result.result.failed).toBe(0);
+
+      const notePath = join(vaultPath, "Research", "studies", `${citekey}.md`);
+      const parsed = matter(await readFile(notePath, "utf8"));
+      const frontmatter = parseStudyFrontmatter(parsed.data);
+
+      expect(frontmatter.pdf_available).toBe(true);
+      expect(frontmatter.pdf_path).toBe(pdfRelativePath);
+      expect(frontmatter.fulltext_path).toBeUndefined();
     });
   });
 

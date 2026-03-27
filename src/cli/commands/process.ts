@@ -228,6 +228,47 @@ function extractPdfFetchMetadataFromJobMetadata(
   }
 }
 
+function extractFulltextPathFromJobMetadata(
+  db: BunSQLiteDatabase,
+  sissId: string,
+  vaultPath: string,
+): string | undefined {
+  const row = db
+    .query(
+      `
+      SELECT metadata
+      FROM jobs
+      WHERE siss_id = ?
+        AND stage = ?
+        AND status = 'complete'
+        AND metadata IS NOT NULL
+      ORDER BY id DESC
+      LIMIT 1;
+      `,
+    )
+    .get(sissId, PipelineStep.FULLTEXT_MARKER) as { metadata: string } | null;
+
+  if (!row?.metadata) {
+    return undefined;
+  }
+
+  try {
+    const parsed = JSON.parse(row.metadata) as { fulltextPath?: unknown };
+    if (typeof parsed.fulltextPath !== "string" || parsed.fulltextPath.trim().length === 0) {
+      return undefined;
+    }
+
+    const relativePath = relative(vaultPath, parsed.fulltextPath);
+    if (relativePath.startsWith("..") || relativePath.length === 0) {
+      return undefined;
+    }
+
+    return relativePath.replaceAll("\\", "/");
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizePipelineOverall(value: string): PipelineOverallStatus {
   if (Object.values(PipelineOverallStatus).includes(value as PipelineOverallStatus)) {
     return value as PipelineOverallStatus;
@@ -269,6 +310,11 @@ function loadStudyForVaultWrite(params: {
   const pipelineSteps = parsePipelineSteps(row.pipeline_steps_json);
   const zoteroSyncStep = pipelineSteps[PipelineStep.ZOTERO_SYNC] as Record<string, unknown> | undefined;
   const summaryPath = extractSummaryPathFromJobMetadata(params.db, row.siss_id, params.config.vault.path);
+  const fulltextPath = extractFulltextPathFromJobMetadata(
+    params.db,
+    row.siss_id,
+    params.config.vault.path,
+  );
   const pdfMetadata = extractPdfFetchMetadataFromJobMetadata(
     params.db,
     row.siss_id,
@@ -301,6 +347,7 @@ function loadStudyForVaultWrite(params: {
     pipeline_error: row.pipeline_error,
     source: row.source,
     source_collections: parseStringArray(zoteroSyncStep?.source_collections),
+    fulltext_path: fulltextPath,
     summary_path: summaryPath,
     pdf_available: pdfMetadata.pdfAvailable,
     pdf_source: pdfMetadata.pdfSource,

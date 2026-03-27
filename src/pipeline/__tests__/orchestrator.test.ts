@@ -157,6 +157,58 @@ describe("PipelineOrchestrator", () => {
     });
   });
 
+  test("default stage sequence preserves S01 flow without fulltext.marker", async () => {
+    await withDatabase(async (database) => {
+      insertStudy(database, "SISS-004", "lane2026defaultflow");
+
+      const queue = new JobQueue(database.db);
+      queue.enqueue({
+        sissId: "SISS-004",
+        stage: PipelineStep.INGEST,
+        status: "queued",
+      });
+
+      const callOrder: PipelineStep[] = [];
+      const orchestrator = new PipelineOrchestrator({
+        db: database.db,
+        queue,
+      });
+
+      orchestrator.registerStageHandler(PipelineStep.INGEST, async ({ job }) => {
+        callOrder.push(job.stage);
+      });
+      orchestrator.registerStageHandler(PipelineStep.ZOTERO_SYNC, async ({ job }) => {
+        callOrder.push(job.stage);
+      });
+      orchestrator.registerStageHandler(PipelineStep.PDF_FETCH, async ({ job }) => {
+        callOrder.push(job.stage);
+      });
+      orchestrator.registerStageHandler(PipelineStep.SUMMARIZE, async ({ job }) => {
+        callOrder.push(job.stage);
+      });
+      orchestrator.registerStageHandler(PipelineStep.VAULT_WRITE, async ({ job }) => {
+        callOrder.push(job.stage);
+      });
+      orchestrator.registerStageHandler(PipelineStep.FULLTEXT_MARKER, async ({ job }) => {
+        callOrder.push(job.stage);
+      });
+
+      const nonAiResult = await orchestrator.processNonAI();
+      expect(nonAiResult.processed).toBe(3);
+
+      expect(callOrder).toEqual([
+        PipelineStep.INGEST,
+        PipelineStep.ZOTERO_SYNC,
+        PipelineStep.PDF_FETCH,
+      ]);
+
+      expect(callOrder).not.toContain(PipelineStep.FULLTEXT_MARKER);
+
+      const queued = queue.query({ sissId: "SISS-004", status: "queued" }).map((job) => job.stage);
+      expect(queued).toEqual([PipelineStep.SUMMARIZE]);
+    });
+  });
+
   test("derivePipelineOverall returns expected aggregate state", () => {
     expect(derivePipelineOverall({})).toBe(PipelineOverallStatus.NOT_STARTED);
 

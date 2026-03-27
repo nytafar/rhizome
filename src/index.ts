@@ -13,6 +13,7 @@ export * from "./pipeline/orchestrator";
 export * from "./ai/executor";
 export * from "./ai/summary-converter";
 export * from "./stages/summarize";
+export * from "./stages/fulltext-marker";
 export {
   runVaultWriteStage,
   type VaultWriteStageInput,
