@@ -160,6 +160,69 @@ function seedAiSummarizeStudy(params: {
     .run(params.rhizomeId, PipelineStep.SUMMARIZE);
 }
 
+function buildStubClassifyResult(citekey: string, vaultPath: string) {
+  const tier4 = {
+    study_type: null,
+    sample_size: null,
+    duration_weeks: null,
+    population: null,
+    control: null,
+    blinding: null,
+    primary_outcome: null,
+    outcome_direction: null,
+    effect_size: null,
+    significance: null,
+    evidence_quality: null,
+    funding_source: null,
+    conflict_of_interest: null,
+  } as const;
+
+  const tier5 = {
+    herb_species: [],
+    common_names: [],
+    active_compounds: [],
+    plant_parts: [],
+    extraction_types: [],
+    dosages: [],
+    adverse_events: [],
+    safety_rating: null,
+  } as const;
+
+  const tier6 = {
+    therapeutic_areas: [],
+    mechanisms: [],
+    indications: [],
+    contraindications: [],
+    drug_interactions: [],
+    research_gaps: [],
+  } as const;
+
+  return {
+    summaryPath: join(vaultPath, "Research", "studies", "_assets", citekey, "summary.current.md"),
+    output: {
+      source: "abstract_only" as const,
+      tier_4: tier4,
+      tier_5: tier5,
+      tier_6_taxonomy: tier6,
+      tier_7_provisional: [],
+    },
+    metadata: {
+      stage: PipelineStep.CLASSIFY,
+      durationMs: 1,
+      model: "stub-model",
+      skillVersion: "v1",
+      generatedAt: "2026-03-27T00:00:00.000Z",
+      source: "abstract_only" as const,
+      provisionalCount: 0,
+      provisional: [],
+      tier_4: tier4,
+      tier_5: tier5,
+      tier_6_taxonomy: tier6,
+      tier_7_provisional: [],
+    },
+  };
+}
+
 function seedRetryStudy(params: {
   database: Database;
   rhizomeId: string;
@@ -402,12 +465,13 @@ describe("CLI command handlers", () => {
               usedFulltext: false,
             },
           }),
+          classifyStageRunner: async (input) => buildStubClassifyResult(input.study.citekey, vaultPath),
         },
       );
 
       expect(result.mode).toBe("ai");
-      expect(result.result.processed).toBe(2);
-      expect(result.result.succeeded).toBe(2);
+      expect(result.result.processed).toBe(1);
+      expect(result.result.succeeded).toBe(1);
 
       const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
       verifyDb.init();
@@ -491,12 +555,13 @@ describe("CLI command handlers", () => {
               usedFulltext: false,
             },
           }),
+          classifyStageRunner: async (input) => buildStubClassifyResult(input.study.citekey, vaultPath),
         },
       );
 
       expect(result.mode).toBe("ai");
-      expect(result.result.processed).toBe(4);
-      expect(result.result.succeeded).toBe(4);
+      expect(result.result.processed).toBe(2);
+      expect(result.result.succeeded).toBe(2);
 
       const verifyDb = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
       verifyDb.init();
@@ -734,6 +799,7 @@ describe("CLI command handlers", () => {
               },
             };
           },
+          classifyStageRunner: async (input) => buildStubClassifyResult(input.study.citekey, vaultPath),
         },
       );
 
@@ -803,6 +869,7 @@ describe("CLI command handlers", () => {
               },
             };
           },
+          classifyStageRunner: async (input) => buildStubClassifyResult(input.study.citekey, vaultPath),
         },
       );
 
@@ -909,6 +976,7 @@ describe("CLI command handlers", () => {
               },
             };
           },
+          classifyStageRunner: async (input) => buildStubClassifyResult(input.study.citekey, vaultPath),
         },
       );
 

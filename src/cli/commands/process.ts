@@ -14,6 +14,7 @@ import {
   type PipelineStepState,
 } from "../../types/pipeline";
 import { runSummarizeStage } from "../../stages/summarize";
+import { runClassifyStage } from "../../stages/classify";
 import { runPdfFetchStage } from "../../stages/pdf-fetch";
 import { runFulltextMarkerStage } from "../../stages/fulltext-marker";
 import { runVaultWriteStage } from "../../stages/vault-write";
@@ -60,6 +61,17 @@ export interface ProcessCommandResult {
 }
 
 type SummarizeStageRunner = typeof runSummarizeStage;
+type ClassifyStageRunner = typeof runClassifyStage;
+
+const AI_PIPELINE_STAGE_SEQUENCE: PipelineStep[] = [
+  PipelineStep.INGEST,
+  PipelineStep.ZOTERO_SYNC,
+  PipelineStep.PDF_FETCH,
+  PipelineStep.FULLTEXT_MARKER,
+  PipelineStep.SUMMARIZE,
+  PipelineStep.CLASSIFY,
+  PipelineStep.VAULT_WRITE,
+];
 
 export interface ProcessCommandDeps {
   cwd?: string;
@@ -67,6 +79,7 @@ export interface ProcessCommandDeps {
   loadConfigFn?: (configPath: string) => Promise<RhizomeConfig>;
   onEvent?: (event: PipelineOrchestratorEvent) => void;
   summarizeStageRunner?: SummarizeStageRunner;
+  classifyStageRunner?: ClassifyStageRunner;
 }
 
 function normalizeCitekeyOption(citekey: string): string {
@@ -537,6 +550,7 @@ function registerBuiltInStageHandlers(
     cwd: string;
     now: () => Date;
     summarizeStageRunner: SummarizeStageRunner;
+    classifyStageRunner: ClassifyStageRunner;
   },
 ): void {
   const assetsRootDir = resolveAssetsRootDir(params.config);
@@ -632,6 +646,42 @@ function registerBuiltInStageHandlers(
     };
   });
 
+  orchestrator.registerStageHandler(PipelineStep.CLASSIFY, async ({ job }) => {
+    const study = loadStudyForSummarize(params.db, job.rhizomeId);
+
+    const classification = await params.classifyStageRunner({
+      study: {
+        citekey: study.citekey,
+        title: study.title ?? "Untitled study",
+        doi: study.doi ?? undefined,
+        pmid: study.pmid ?? undefined,
+      },
+      skillsDir: resolveSkillsDir(params.cwd, params.config),
+      classifierSkillFile: params.config.ai.classifier.skill_file,
+      skillVersion: "v1",
+      model: "claude",
+      claudeBinary: params.config.ai.claude_binary,
+      timeoutMs: params.config.ai.classifier.timeout_ms,
+      maxTurns: params.config.ai.classifier.max_turns,
+      assetsRootDir,
+    });
+
+    return {
+      metadata: {
+        summaryPath: classification.summaryPath,
+        classifier_model: classification.metadata.model,
+        classifier_skill_version: classification.metadata.skillVersion,
+        classifier_generated_at: classification.metadata.generatedAt,
+        source: classification.metadata.source,
+        provisional_count: classification.metadata.provisionalCount,
+        tier_4: classification.output.tier_4,
+        tier_5: classification.output.tier_5,
+        tier_6_taxonomy: classification.output.tier_6_taxonomy,
+        tier_7_provisional: classification.output.tier_7_provisional,
+      },
+    };
+  });
+
   orchestrator.registerStageHandler(PipelineStep.VAULT_WRITE, async ({ job }) => {
     const study = loadStudyForVaultWrite({
       db: params.db,
@@ -704,6 +754,7 @@ export async function runProcessCommand(
     const orchestrator = new PipelineOrchestrator({
       db: database.db,
       targetRhizomeId,
+      stageSequence: AI_PIPELINE_STAGE_SEQUENCE,
       onEvent: deps.onEvent,
     });
 
@@ -713,6 +764,7 @@ export async function runProcessCommand(
       cwd,
       now: () => new Date(),
       summarizeStageRunner: deps.summarizeStageRunner ?? runSummarizeStage,
+      classifyStageRunner: deps.classifyStageRunner ?? runClassifyStage,
     });
 
     const aiMode = options.ai === true;
