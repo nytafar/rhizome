@@ -96,6 +96,50 @@ async function moveConfigToLegacyWorkspace(root: string, rewriteWorkspacePaths =
   await rm(canonicalConfigPath, { force: true });
 }
 
+function seedAiSummarizeStudy(params: {
+  database: Database;
+  sissId: string;
+  citekey: string;
+  title: string;
+  fulltextMetadataRaw?: string;
+}): void {
+  params.database.db
+    .query(
+      `
+      INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+      VALUES (?, ?, ?, ?, ?, ?);
+      `,
+    )
+    .run(
+      params.sissId,
+      params.citekey,
+      "zotero",
+      params.title,
+      PipelineOverallStatus.IN_PROGRESS,
+      "{}",
+    );
+
+  if (params.fulltextMetadataRaw) {
+    params.database.db
+      .query(
+        `
+        INSERT INTO jobs (siss_id, stage, status, metadata)
+        VALUES (?, ?, 'complete', ?);
+        `,
+      )
+      .run(params.sissId, PipelineStep.FULLTEXT_MARKER, params.fulltextMetadataRaw);
+  }
+
+  params.database.db
+    .query(
+      `
+      INSERT INTO jobs (siss_id, stage, status, metadata)
+      VALUES (?, ?, 'queued', NULL);
+      `,
+    )
+    .run(params.sissId, PipelineStep.SUMMARIZE);
+}
+
 describe("CLI command handlers", () => {
   test("sync zotero imports studies and status reports queue + citekey detail", async () => {
     await withTempRhizome(async (root) => {
@@ -199,6 +243,219 @@ describe("CLI command handlers", () => {
       expect(result.mode).toBe("ai");
       expect(result.result.processed).toBe(0);
       expect(result.result.failed).toBe(0);
+    });
+  });
+
+  test("process summarize loads fulltext markdown when fulltext.marker metadata points to readable vault content", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      const sissId = "550e8400-e29b-41d4-a716-446655440022";
+      const citekey = "lane2026fulltextinput";
+      const fulltextPath = join(vaultPath, "Research", "studies", "_assets", citekey, "fulltext.md");
+      await mkdir(join(vaultPath, "Research", "studies", "_assets", citekey), { recursive: true });
+      await Bun.write(fulltextPath, "# Full Text\n\nDetailed markdown body.");
+
+      seedAiSummarizeStudy({
+        database,
+        sissId,
+        citekey,
+        title: "Fulltext summarize handoff",
+        fulltextMetadataRaw: JSON.stringify({ fulltextPath }),
+      });
+
+      database.close();
+
+      let capturedFulltextMarkdown: string | undefined;
+
+      const result = await runProcessCommand(
+        { ai: true, batch: 5 },
+        {
+          cwd: root,
+          summarizeStageRunner: async (input) => {
+            capturedFulltextMarkdown = input.fulltextMarkdown;
+            return {
+              summaryPath: join(vaultPath, "Research", "studies", "_assets", citekey, "summary.current.md"),
+              markdown: "# Summary\n",
+              output: {
+                source: "fulltext",
+                tldr: "TLDR",
+                background: "Background",
+                methods: "Methods",
+                key_findings: "Findings",
+                clinical_relevance: "Relevance",
+                limitations: "Limitations",
+              },
+              metadata: {
+                stage: PipelineStep.SUMMARIZE,
+                durationMs: 1,
+                model: "stub-model",
+                skillVersion: "v1",
+                source: "fulltext",
+                usedFulltext: true,
+              },
+            };
+          },
+        },
+      );
+
+      expect(result.mode).toBe("ai");
+      expect(result.result.failed).toBe(0);
+      expect(capturedFulltextMarkdown).toContain("Detailed markdown body.");
+    });
+  });
+
+  test("process summarize falls back when fulltext.marker metadata is malformed", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      const sissId = "550e8400-e29b-41d4-a716-446655440023";
+      const citekey = "lane2026malformedfulltextjson";
+
+      seedAiSummarizeStudy({
+        database,
+        sissId,
+        citekey,
+        title: "Malformed fulltext metadata fallback",
+        fulltextMetadataRaw: "{not-json}",
+      });
+
+      database.close();
+
+      let capturedFulltextMarkdown: string | undefined;
+
+      const result = await runProcessCommand(
+        { ai: true, batch: 5 },
+        {
+          cwd: root,
+          summarizeStageRunner: async (input) => {
+            capturedFulltextMarkdown = input.fulltextMarkdown;
+            return {
+              summaryPath: join(vaultPath, "Research", "studies", "_assets", citekey, "summary.current.md"),
+              markdown: "# Summary\n",
+              output: {
+                source: "abstract_only",
+                tldr: "TLDR",
+                background: "Background",
+                methods: "Methods",
+                key_findings: "Findings",
+                clinical_relevance: "Relevance",
+                limitations: "Limitations",
+              },
+              metadata: {
+                stage: PipelineStep.SUMMARIZE,
+                durationMs: 1,
+                model: "stub-model",
+                skillVersion: "v1",
+                source: "abstract_only",
+                usedFulltext: false,
+              },
+            };
+          },
+        },
+      );
+
+      expect(result.mode).toBe("ai");
+      expect(result.result.failed).toBe(0);
+      expect(capturedFulltextMarkdown).toBeUndefined();
+    });
+  });
+
+  test("process summarize falls back when fulltext path is outside vault or markdown is missing/empty", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const scenarios = [
+        {
+          sissId: "550e8400-e29b-41d4-a716-446655440024",
+          citekey: "lane2026outofrootfulltext",
+          title: "Out of root fallback",
+          fulltextPath: join(root, "outside-vault.md"),
+          markdown: "# Should not be read\n",
+        },
+        {
+          sissId: "550e8400-e29b-41d4-a716-446655440025",
+          citekey: "lane2026missingfulltext",
+          title: "Missing file fallback",
+          fulltextPath: join(vaultPath, "Research", "studies", "_assets", "lane2026missingfulltext", "missing.md"),
+          markdown: undefined,
+        },
+        {
+          sissId: "550e8400-e29b-41d4-a716-446655440026",
+          citekey: "lane2026emptyfulltext",
+          title: "Empty markdown fallback",
+          fulltextPath: join(vaultPath, "Research", "studies", "_assets", "lane2026emptyfulltext", "fulltext.md"),
+          markdown: "   \n\n\t",
+        },
+      ];
+
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+
+      for (const scenario of scenarios) {
+        if (typeof scenario.markdown === "string") {
+          await mkdir(join(vaultPath, "Research", "studies", "_assets", scenario.citekey), {
+            recursive: true,
+          });
+          await Bun.write(scenario.fulltextPath, scenario.markdown);
+        }
+
+        seedAiSummarizeStudy({
+          database,
+          sissId: scenario.sissId,
+          citekey: scenario.citekey,
+          title: scenario.title,
+          fulltextMetadataRaw: JSON.stringify({ fulltextPath: scenario.fulltextPath }),
+        });
+      }
+
+      database.close();
+
+      const capturedByCitekey = new Map<string, string | undefined>();
+
+      const result = await runProcessCommand(
+        { ai: true, batch: 10 },
+        {
+          cwd: root,
+          summarizeStageRunner: async (input) => {
+            capturedByCitekey.set(input.study.citekey, input.fulltextMarkdown);
+            return {
+              summaryPath: join(
+                vaultPath,
+                "Research",
+                "studies",
+                "_assets",
+                input.study.citekey,
+                "summary.current.md",
+              ),
+              markdown: "# Summary\n",
+              output: {
+                source: "abstract_only",
+                tldr: "TLDR",
+                background: "Background",
+                methods: "Methods",
+                key_findings: "Findings",
+                clinical_relevance: "Relevance",
+                limitations: "Limitations",
+              },
+              metadata: {
+                stage: PipelineStep.SUMMARIZE,
+                durationMs: 1,
+                model: "stub-model",
+                skillVersion: "v1",
+                source: "abstract_only",
+                usedFulltext: false,
+              },
+            };
+          },
+        },
+      );
+
+      expect(result.mode).toBe("ai");
+      expect(result.result.failed).toBe(0);
+      expect(capturedByCitekey.get("lane2026outofrootfulltext")).toBeUndefined();
+      expect(capturedByCitekey.get("lane2026missingfulltext")).toBeUndefined();
+      expect(capturedByCitekey.get("lane2026emptyfulltext")).toBeUndefined();
     });
   });
 

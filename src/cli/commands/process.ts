@@ -1,4 +1,4 @@
-import { isAbsolute, join, relative } from "node:path";
+import { isAbsolute, join, relative, resolve } from "node:path";
 import { loadConfig, type RhizomeConfig } from "../../config/loader";
 import { resolveWorkspaceConfigPath } from "../../config/workspace-contract";
 import { Database } from "../../db/database";
@@ -52,11 +52,14 @@ export interface ProcessCommandResult {
   result: ProcessResult;
 }
 
+type SummarizeStageRunner = typeof runSummarizeStage;
+
 export interface ProcessCommandDeps {
   cwd?: string;
   stdout?: Pick<typeof process.stdout, "write">;
   loadConfigFn?: (configPath: string) => Promise<RhizomeConfig>;
   onEvent?: (event: PipelineOrchestratorEvent) => void;
+  summarizeStageRunner?: SummarizeStageRunner;
 }
 
 function resolveDbPath(cwd: string, config: RhizomeConfig): string {
@@ -278,6 +281,76 @@ function extractFulltextPathFromJobMetadata(
   }
 }
 
+function resolvePathWithinVault(vaultPath: string, candidatePath: string): string | undefined {
+  const vaultRoot = resolve(vaultPath);
+  const resolvedCandidate = isAbsolute(candidatePath)
+    ? resolve(candidatePath)
+    : resolve(vaultRoot, candidatePath);
+
+  const relativePath = relative(vaultRoot, resolvedCandidate);
+  if (relativePath.length === 0 || relativePath.startsWith("..") || isAbsolute(relativePath)) {
+    return undefined;
+  }
+
+  return resolvedCandidate;
+}
+
+async function loadFulltextMarkdownForSummarize(
+  db: BunSQLiteDatabase,
+  sissId: string,
+  vaultPath: string,
+): Promise<string | undefined> {
+  const row = db
+    .query(
+      `
+      SELECT metadata
+      FROM jobs
+      WHERE siss_id = ?
+        AND stage = ?
+        AND status = 'complete'
+        AND metadata IS NOT NULL
+      ORDER BY id DESC
+      LIMIT 1;
+      `,
+    )
+    .get(sissId, PipelineStep.FULLTEXT_MARKER) as { metadata: string } | null;
+
+  if (!row?.metadata) {
+    return undefined;
+  }
+
+  let fulltextPath: string | undefined;
+  try {
+    const parsed = JSON.parse(row.metadata) as { fulltextPath?: unknown };
+    if (typeof parsed.fulltextPath === "string" && parsed.fulltextPath.trim().length > 0) {
+      fulltextPath = parsed.fulltextPath.trim();
+    }
+  } catch {
+    return undefined;
+  }
+
+  if (!fulltextPath) {
+    return undefined;
+  }
+
+  const fulltextAbsolutePath = resolvePathWithinVault(vaultPath, fulltextPath);
+  if (!fulltextAbsolutePath) {
+    return undefined;
+  }
+
+  try {
+    const file = Bun.file(fulltextAbsolutePath);
+    if (!(await file.exists())) {
+      return undefined;
+    }
+
+    const markdown = await file.text();
+    return markdown.trim().length > 0 ? markdown : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
 function normalizePipelineOverall(value: string): PipelineOverallStatus {
   if (Object.values(PipelineOverallStatus).includes(value as PipelineOverallStatus)) {
     return value as PipelineOverallStatus;
@@ -389,6 +462,7 @@ function registerBuiltInStageHandlers(
     config: RhizomeConfig;
     cwd: string;
     now: () => Date;
+    summarizeStageRunner: SummarizeStageRunner;
   },
 ): void {
   const assetsRootDir = resolveAssetsRootDir(params.config);
@@ -448,8 +522,13 @@ function registerBuiltInStageHandlers(
 
   orchestrator.registerStageHandler(PipelineStep.SUMMARIZE, async ({ job }) => {
     const study = loadStudyForSummarize(params.db, job.sissId);
+    const fulltextMarkdown = await loadFulltextMarkdownForSummarize(
+      params.db,
+      job.sissId,
+      params.config.vault.path,
+    );
 
-    const summary = await runSummarizeStage({
+    const summary = await params.summarizeStageRunner({
       study: {
         citekey: study.citekey,
         title: study.title ?? "Untitled study",
@@ -459,6 +538,7 @@ function registerBuiltInStageHandlers(
         pmid: study.pmid ?? undefined,
         abstract: undefined,
       },
+      fulltextMarkdown,
       skillsDir: resolveSkillsDir(params.cwd, params.config),
       summarizerSkillFile: params.config.ai.summarizer.skill_file,
       skillVersion: "v1",
@@ -552,6 +632,7 @@ export async function runProcessCommand(
       config,
       cwd,
       now: () => new Date(),
+      summarizeStageRunner: deps.summarizeStageRunner ?? runSummarizeStage,
     });
 
     const aiMode = options.ai === true;
