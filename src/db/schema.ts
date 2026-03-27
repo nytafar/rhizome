@@ -1,4 +1,4 @@
-export const SCHEMA_VERSION = 4;
+export const SCHEMA_VERSION = 5;
 
 const CREATE_STUDIES_TABLE_SQL = `
 CREATE TABLE IF NOT EXISTS studies (
@@ -278,6 +278,41 @@ const MIGRATION_004_SQL: string[] = [
   "CREATE INDEX IF NOT EXISTS idx_pipeline_runs_status ON pipeline_runs(status);",
 ];
 
+const MIGRATION_005_SQL: string[] = [
+  `
+  CREATE TABLE IF NOT EXISTS taxonomy_proposal_decisions (
+    proposal_id TEXT PRIMARY KEY,
+    operation_type TEXT NOT NULL CHECK (operation_type IN ('rename', 'merge')),
+    group_name TEXT NOT NULL,
+    source_value TEXT NOT NULL CHECK (length(trim(source_value)) > 0),
+    target_value TEXT NOT NULL CHECK (length(trim(target_value)) > 0),
+    decision_status TEXT NOT NULL CHECK (decision_status IN ('approved', 'rejected')),
+    decided_by TEXT,
+    rationale TEXT,
+    decided_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+  `,
+  "CREATE INDEX IF NOT EXISTS idx_taxonomy_proposal_decisions_status ON taxonomy_proposal_decisions(decision_status);",
+  "CREATE INDEX IF NOT EXISTS idx_taxonomy_proposal_decisions_group ON taxonomy_proposal_decisions(group_name, operation_type);",
+  `
+  CREATE TABLE IF NOT EXISTS taxonomy_propagation_checkpoints (
+    checkpoint_id TEXT PRIMARY KEY,
+    proposal_id TEXT NOT NULL REFERENCES taxonomy_proposal_decisions(proposal_id) ON DELETE CASCADE,
+    status TEXT NOT NULL CHECK (status IN ('in_progress', 'completed', 'error')),
+    cursor_json TEXT NOT NULL DEFAULT '{}',
+    processed_notes INTEGER NOT NULL DEFAULT 0 CHECK (processed_notes >= 0),
+    total_notes INTEGER NOT NULL DEFAULT 0 CHECK (total_notes >= 0),
+    started_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+    completed_at TEXT,
+    last_error TEXT
+  );
+  `,
+  "CREATE INDEX IF NOT EXISTS idx_taxonomy_propagation_checkpoints_proposal ON taxonomy_propagation_checkpoints(proposal_id);",
+  "CREATE INDEX IF NOT EXISTS idx_taxonomy_propagation_checkpoints_status ON taxonomy_propagation_checkpoints(status);",
+];
+
 export interface SchemaMigration {
   version: number;
   statements: string[];
@@ -299,5 +334,9 @@ export const SCHEMA_MIGRATIONS: SchemaMigration[] = [
   {
     version: 4,
     statements: MIGRATION_004_SQL,
+  },
+  {
+    version: 5,
+    statements: MIGRATION_005_SQL,
   },
 ];

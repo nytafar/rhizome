@@ -32,6 +32,8 @@ describe("Database", () => {
         "jobs",
         "pipeline_runs",
         "studies",
+        "taxonomy_propagation_checkpoints",
+        "taxonomy_proposal_decisions",
         "zotero_sync_state",
       ]);
 
@@ -39,11 +41,17 @@ describe("Database", () => {
         .query("SELECT value FROM config_meta WHERE key = 'db_schema_version';")
         .get() as { value: string };
 
-      expect(schemaVersion.value).toBe("4");
+      expect(schemaVersion.value).toBe("5");
 
       const studiesColumns = database.db.query("PRAGMA table_info(studies);").all() as Array<{ name: string }>;
       const jobsColumns = database.db.query("PRAGMA table_info(jobs);").all() as Array<{ name: string }>;
       const logColumns = database.db.query("PRAGMA table_info(job_stage_log);").all() as Array<{ name: string }>;
+      const decisionColumns = database.db
+        .query("PRAGMA table_info(taxonomy_proposal_decisions);")
+        .all() as Array<{ name: string }>;
+      const checkpointColumns = database.db
+        .query("PRAGMA table_info(taxonomy_propagation_checkpoints);")
+        .all() as Array<{ name: string }>;
 
       expect(studiesColumns.some((column) => column.name === "rhizome_id")).toBe(true);
       expect(studiesColumns.some((column) => column.name === "zotero_version")).toBe(true);
@@ -53,6 +61,15 @@ describe("Database", () => {
       expect(studiesColumns.some((column) => column.name === "source_collections_json")).toBe(true);
       expect(jobsColumns.some((column) => column.name === "rhizome_id")).toBe(true);
       expect(logColumns.some((column) => column.name === "rhizome_id")).toBe(true);
+      expect(decisionColumns.some((column) => column.name === "proposal_id")).toBe(true);
+      expect(decisionColumns.some((column) => column.name === "operation_type")).toBe(true);
+      expect(decisionColumns.some((column) => column.name === "decision_status")).toBe(true);
+      expect(decisionColumns.some((column) => column.name === "decided_at")).toBe(true);
+      expect(checkpointColumns.some((column) => column.name === "checkpoint_id")).toBe(true);
+      expect(checkpointColumns.some((column) => column.name === "proposal_id")).toBe(true);
+      expect(checkpointColumns.some((column) => column.name === "status")).toBe(true);
+      expect(checkpointColumns.some((column) => column.name === "cursor_json")).toBe(true);
+      expect(checkpointColumns.some((column) => column.name === "last_error")).toBe(true);
 
       database.close();
     } finally {
@@ -253,7 +270,7 @@ describe("Database", () => {
       const schemaVersion = database.db
         .query("SELECT value FROM config_meta WHERE key = 'db_schema_version';")
         .get() as { value: string };
-      expect(schemaVersion.value).toBe("4");
+      expect(schemaVersion.value).toBe("5");
 
       const migratedStudy = database.db
         .query(

@@ -3,7 +3,11 @@ import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { classifierTaxonomyGroups } from "../../ai/schemas/classifier";
-import { createEmptyTaxonomyState } from "../schema";
+import {
+  createEmptyTaxonomyState,
+  taxonomyPropagationCheckpointRecordSchema,
+  taxonomyProposalDecisionRecordSchema,
+} from "../schema";
 import { TaxonomyManager, TaxonomyPersistenceError } from "../manager";
 import type { AtomicFs } from "../types";
 
@@ -304,5 +308,149 @@ describe("TaxonomyManager", () => {
       promoted_at: "2026-03-27T03:00:00.000Z",
       promoted_sources: ["classifier"],
     });
+  });
+
+  test("decision schema rejects malformed proposal IDs, operation type, and empty targets", () => {
+    const invalidProposal = taxonomyProposalDecisionRecordSchema.safeParse({
+      proposal_id: "bad-id",
+      operation_type: "rename",
+      group_name: "mechanisms",
+      source_value: "hpa_axis",
+      target_value: "resilience",
+      decision_status: "approved",
+      decided_at: "2026-03-27T00:00:00.000Z",
+      updated_at: "2026-03-27T00:00:00.000Z",
+    });
+    expect(invalidProposal.success).toBe(false);
+
+    const invalidOperation = taxonomyProposalDecisionRecordSchema.safeParse({
+      proposal_id: "proposal:mechanisms:rename:hpa_axis",
+      operation_type: "swap",
+      group_name: "mechanisms",
+      source_value: "hpa_axis",
+      target_value: "resilience",
+      decision_status: "approved",
+      decided_at: "2026-03-27T00:00:00.000Z",
+      updated_at: "2026-03-27T00:00:00.000Z",
+    });
+    expect(invalidOperation.success).toBe(false);
+
+    const emptyTarget = taxonomyProposalDecisionRecordSchema.safeParse({
+      proposal_id: "proposal:mechanisms:rename:hpa_axis",
+      operation_type: "rename",
+      group_name: "mechanisms",
+      source_value: "hpa_axis",
+      target_value: "   ",
+      decision_status: "approved",
+      decided_at: "2026-03-27T00:00:00.000Z",
+      updated_at: "2026-03-27T00:00:00.000Z",
+    });
+    expect(emptyTarget.success).toBe(false);
+  });
+
+  test("decision schema allows deterministic duplicate updates for same proposal_id", () => {
+    const approved = taxonomyProposalDecisionRecordSchema.parse({
+      proposal_id: "proposal:mechanisms:rename:hpa_axis",
+      operation_type: "rename",
+      group_name: "mechanisms",
+      source_value: "hpa_axis",
+      target_value: "hpa_axis_regulation",
+      decision_status: "approved",
+      decided_at: "2026-03-27T00:00:00.000Z",
+      updated_at: "2026-03-27T00:00:00.000Z",
+    });
+
+    const rejected = taxonomyProposalDecisionRecordSchema.parse({
+      ...approved,
+      decision_status: "rejected",
+      updated_at: "2026-03-27T01:00:00.000Z",
+    });
+
+    expect(approved.proposal_id).toBe(rejected.proposal_id);
+    expect(rejected.decision_status).toBe("rejected");
+  });
+
+  test("checkpoint schema enforces lifecycle invariants for in_progress/completed/error", () => {
+    const inProgress = taxonomyPropagationCheckpointRecordSchema.parse({
+      checkpoint_id: "checkpoint:proposal:mechanisms:rename:hpa_axis",
+      proposal_id: "proposal:mechanisms:rename:hpa_axis",
+      status: "in_progress",
+      cursor: {
+        note_paths: ["Research/studies/a.md", "Research/studies/b.md"],
+        current_index: 1,
+      },
+      processed_notes: 1,
+      total_notes: 2,
+      started_at: "2026-03-27T00:00:00.000Z",
+      updated_at: "2026-03-27T00:01:00.000Z",
+    });
+    expect(inProgress.status).toBe("in_progress");
+
+    const completed = taxonomyPropagationCheckpointRecordSchema.parse({
+      ...inProgress,
+      status: "completed",
+      processed_notes: 2,
+      cursor: {
+        note_paths: ["Research/studies/a.md", "Research/studies/b.md"],
+        current_index: 2,
+      },
+      updated_at: "2026-03-27T00:02:00.000Z",
+      completed_at: "2026-03-27T00:02:00.000Z",
+    });
+    expect(completed.status).toBe("completed");
+
+    const errorCheckpoint = taxonomyPropagationCheckpointRecordSchema.parse({
+      ...inProgress,
+      status: "error",
+      last_error: "disk write failed",
+      updated_at: "2026-03-27T00:03:00.000Z",
+    });
+    expect(errorCheckpoint.last_error).toBe("disk write failed");
+
+    const missingErrorMessage = taxonomyPropagationCheckpointRecordSchema.safeParse({
+      ...inProgress,
+      status: "error",
+    });
+    expect(missingErrorMessage.success).toBe(false);
+
+    const completedWithoutTimestamp = taxonomyPropagationCheckpointRecordSchema.safeParse({
+      ...inProgress,
+      status: "completed",
+      processed_notes: 2,
+    });
+    expect(completedWithoutTimestamp.success).toBe(false);
+  });
+
+  test("checkpoint schema rejects resume boundary violations and already-complete cursor regressions", () => {
+    const processedOverflow = taxonomyPropagationCheckpointRecordSchema.safeParse({
+      checkpoint_id: "checkpoint:proposal:mechanisms:rename:hpa_axis",
+      proposal_id: "proposal:mechanisms:rename:hpa_axis",
+      status: "in_progress",
+      cursor: {
+        note_paths: ["Research/studies/a.md"],
+        current_index: 1,
+      },
+      processed_notes: 2,
+      total_notes: 1,
+      started_at: "2026-03-27T00:00:00.000Z",
+      updated_at: "2026-03-27T00:01:00.000Z",
+    });
+    expect(processedOverflow.success).toBe(false);
+
+    const cursorOverflow = taxonomyPropagationCheckpointRecordSchema.safeParse({
+      checkpoint_id: "checkpoint:proposal:mechanisms:rename:hpa_axis",
+      proposal_id: "proposal:mechanisms:rename:hpa_axis",
+      status: "completed",
+      cursor: {
+        note_paths: ["Research/studies/a.md"],
+        current_index: 2,
+      },
+      processed_notes: 1,
+      total_notes: 1,
+      started_at: "2026-03-27T00:00:00.000Z",
+      updated_at: "2026-03-27T00:01:00.000Z",
+      completed_at: "2026-03-27T00:01:00.000Z",
+    });
+    expect(cursorOverflow.success).toBe(false);
   });
 });
