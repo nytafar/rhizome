@@ -1,4 +1,4 @@
-import { join, relative } from "node:path";
+import { isAbsolute, join, relative } from "node:path";
 import { loadConfig, type RhizomeConfig } from "../../config/loader";
 import { resolveWorkspaceConfigPath } from "../../config/workspace-contract";
 import { Database } from "../../db/database";
@@ -15,7 +15,10 @@ import {
 } from "../../types/pipeline";
 import { runSummarizeStage } from "../../stages/summarize";
 import { runPdfFetchStage } from "../../stages/pdf-fetch";
+import { runFulltextMarkerStage } from "../../stages/fulltext-marker";
 import { runVaultWriteStage } from "../../stages/vault-write";
+import { ParserRegistry } from "../../parser/registry";
+import { MarkerProvider } from "../../parser/marker-provider";
 import type { StudyRecord } from "../../types/study";
 import type { Database as BunSQLiteDatabase } from "bun:sqlite";
 import { getVaultFolderStructurePaths } from "../../vault/folder-creator";
@@ -75,6 +78,12 @@ function resolveAssetsRootDir(config: RhizomeConfig): string {
   });
 
   return join(paths.researchRootDir, config.vault.studies_folder, config.vault.assets_folder);
+}
+
+function resolveMarkerBinaryPath(cwd: string, config: RhizomeConfig): string {
+  const pythonEnvPath = config.parser.marker.python_env;
+  const pythonEnvRoot = isAbsolute(pythonEnvPath) ? pythonEnvPath : join(cwd, pythonEnvPath);
+  return join(pythonEnvRoot, "bin", "marker_single");
 }
 
 function buildCommandLabel(options: ProcessCommandOptions): string {
@@ -382,6 +391,16 @@ function registerBuiltInStageHandlers(
     now: () => Date;
   },
 ): void {
+  const assetsRootDir = resolveAssetsRootDir(params.config);
+  const parserRegistry = ParserRegistry.fromConfig(params.config, [
+    new MarkerProvider({
+      markerBinary: resolveMarkerBinaryPath(params.cwd, params.config),
+      markerVersion: params.config.parser.marker.version,
+      defaultTimeoutMs: params.config.parser.marker.timeout_ms,
+      defaultForceOcr: params.config.parser.marker.force_ocr,
+    }),
+  ]);
+
   orchestrator.registerStageHandler(PipelineStep.INGEST, async () => {
     return {
       metadata: {
@@ -404,9 +423,22 @@ function registerBuiltInStageHandlers(
     const result = await runPdfFetchStage({
       db: params.db,
       sissId: job.sissId,
-      assetsRootDir: resolveAssetsRootDir(params.config),
+      assetsRootDir,
       sourceOrder: params.config.pdf.sources,
       maxFileSizeMb: params.config.pdf.max_file_size_mb,
+    });
+
+    return {
+      metadata: result.metadata,
+    };
+  });
+
+  orchestrator.registerStageHandler(PipelineStep.FULLTEXT_MARKER, async ({ job }) => {
+    const result = await runFulltextMarkerStage({
+      db: params.db,
+      sissId: job.sissId,
+      assetsRootDir,
+      parserRegistry,
     });
 
     return {
@@ -434,7 +466,7 @@ function registerBuiltInStageHandlers(
       claudeBinary: params.config.ai.claude_binary,
       timeoutMs: params.config.ai.summarizer.timeout_ms,
       maxTurns: params.config.ai.summarizer.max_turns,
-      assetsRootDir: resolveAssetsRootDir(params.config),
+      assetsRootDir,
     });
 
     return {

@@ -202,7 +202,7 @@ describe("CLI command handlers", () => {
     });
   });
 
-  test("process non-AI continues to summarize queue when pdf_fetch finds no PDF", async () => {
+  test("process non-AI runs fulltext.marker and still queues summarize when pdf_fetch finds no PDF", async () => {
     await withTempRhizome(async (root) => {
       const item: ZoteroItem = {
         key: "ITEM_NOPDF_001",
@@ -254,14 +254,33 @@ describe("CLI command handlers", () => {
         )
         .get(PipelineStep.PDF_FETCH) as { metadata: string } | null;
 
+      const fulltextMarkerMetadataRow = database.db
+        .query(
+          `
+          SELECT metadata
+          FROM jobs
+          WHERE stage = ? AND status = 'complete'
+          ORDER BY id DESC
+          LIMIT 1;
+          `,
+        )
+        .get(PipelineStep.FULLTEXT_MARKER) as { metadata: string } | null;
+
       database.close();
 
       expect(summarizeQueued.count).toBe(1);
       expect(pdfFetchMetadataRow).toBeDefined();
+      expect(fulltextMarkerMetadataRow).toBeDefined();
       const pdfFetchMetadata = JSON.parse(pdfFetchMetadataRow?.metadata ?? "{}") as {
         pdfAvailable?: boolean;
       };
+      const fulltextMarkerMetadata = JSON.parse(fulltextMarkerMetadataRow?.metadata ?? "{}") as {
+        skipped?: boolean;
+        reason?: string;
+      };
       expect(pdfFetchMetadata.pdfAvailable).toBe(false);
+      expect(fulltextMarkerMetadata.skipped).toBe(true);
+      expect(fulltextMarkerMetadata.reason).toBe("no_pdf");
     });
   });
 

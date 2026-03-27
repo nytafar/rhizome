@@ -92,6 +92,9 @@ describe("PipelineOrchestrator", () => {
       orchestrator.registerStageHandler(PipelineStep.PDF_FETCH, async ({ job }) => {
         callOrder.push(job.stage);
       });
+      orchestrator.registerStageHandler(PipelineStep.FULLTEXT_MARKER, async ({ job }) => {
+        callOrder.push(job.stage);
+      });
       orchestrator.registerStageHandler(PipelineStep.SUMMARIZE, async ({ job }) => {
         callOrder.push(job.stage);
       });
@@ -101,10 +104,10 @@ describe("PipelineOrchestrator", () => {
 
       const nonAiResult = await orchestrator.processNonAI();
       expect(nonAiResult).toEqual({
-        processed: 3,
-        succeeded: 3,
+        processed: 4,
+        succeeded: 4,
         failed: 0,
-        enqueued: 3,
+        enqueued: 4,
       });
 
       const stateAfterNonAI = readPipelineState(database, "SISS-001");
@@ -112,6 +115,7 @@ describe("PipelineOrchestrator", () => {
       expect(stateAfterNonAI.steps[PipelineStep.INGEST]?.status).toBe(PipelineStepStatus.COMPLETE);
       expect(stateAfterNonAI.steps[PipelineStep.ZOTERO_SYNC]?.status).toBe(PipelineStepStatus.COMPLETE);
       expect(stateAfterNonAI.steps[PipelineStep.PDF_FETCH]?.status).toBe(PipelineStepStatus.COMPLETE);
+      expect(stateAfterNonAI.steps[PipelineStep.FULLTEXT_MARKER]?.status).toBe(PipelineStepStatus.COMPLETE);
       expect(stateAfterNonAI.steps[PipelineStep.SUMMARIZE]?.status).toBe(PipelineStepStatus.QUEUED);
 
       const queuedAfterNonAI = queue.query({ sissId: "SISS-001", status: "queued" });
@@ -151,13 +155,14 @@ describe("PipelineOrchestrator", () => {
         PipelineStep.INGEST,
         PipelineStep.ZOTERO_SYNC,
         PipelineStep.PDF_FETCH,
+        PipelineStep.FULLTEXT_MARKER,
         PipelineStep.SUMMARIZE,
         PipelineStep.VAULT_WRITE,
       ]);
     });
   });
 
-  test("default stage sequence preserves S01 flow without fulltext.marker", async () => {
+  test("default stage sequence includes fulltext.marker before summarize", async () => {
     await withDatabase(async (database) => {
       insertStudy(database, "SISS-004", "lane2026defaultflow");
 
@@ -194,15 +199,14 @@ describe("PipelineOrchestrator", () => {
       });
 
       const nonAiResult = await orchestrator.processNonAI();
-      expect(nonAiResult.processed).toBe(3);
+      expect(nonAiResult.processed).toBe(4);
 
       expect(callOrder).toEqual([
         PipelineStep.INGEST,
         PipelineStep.ZOTERO_SYNC,
         PipelineStep.PDF_FETCH,
+        PipelineStep.FULLTEXT_MARKER,
       ]);
-
-      expect(callOrder).not.toContain(PipelineStep.FULLTEXT_MARKER);
 
       const queued = queue.query({ sissId: "SISS-004", status: "queued" }).map((job) => job.stage);
       expect(queued).toEqual([PipelineStep.SUMMARIZE]);
@@ -258,6 +262,11 @@ describe("PipelineOrchestrator", () => {
         [PipelineStep.PDF_FETCH]: {
           status: PipelineStepStatus.COMPLETE,
           updated_at: "2026-03-25T00:02:30.000Z",
+          retries: 0,
+        },
+        [PipelineStep.FULLTEXT_MARKER]: {
+          status: PipelineStepStatus.COMPLETE,
+          updated_at: "2026-03-25T00:02:45.000Z",
           retries: 0,
         },
         [PipelineStep.VAULT_WRITE]: {

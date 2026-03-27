@@ -60,6 +60,7 @@ const DEFAULT_STAGE_SEQUENCE: PipelineStep[] = [
   PipelineStep.INGEST,
   PipelineStep.ZOTERO_SYNC,
   PipelineStep.PDF_FETCH,
+  PipelineStep.FULLTEXT_MARKER,
   PipelineStep.SUMMARIZE,
   PipelineStep.VAULT_WRITE,
 ];
@@ -73,6 +74,7 @@ const REQUIRED_PHASE1_STEPS: PipelineStep[] = [
   PipelineStep.INGEST,
   PipelineStep.ZOTERO_SYNC,
   PipelineStep.PDF_FETCH,
+  PipelineStep.FULLTEXT_MARKER,
   PipelineStep.SUMMARIZE,
   PipelineStep.VAULT_WRITE,
 ];
