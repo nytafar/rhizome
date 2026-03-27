@@ -5,6 +5,7 @@ import { runSyncZoteroCommand, type SyncCommandOptions } from "./commands/sync";
 import { runProcessCommand, type ProcessCommandOptions } from "./commands/process";
 import { runStatusCommand, type StatusCommandOptions } from "./commands/status";
 import { runRetryCommand, type RetryCommandOptions } from "./commands/retry";
+import { runReprocessCommand, type ReprocessCommandOptions } from "./commands/reprocess";
 import {
   runLockStatusCommand,
   runLockClearCommand,
@@ -77,6 +78,22 @@ export function createCliProgram(): Command {
     .option("--json", "Emit machine-readable JSON")
     .action(async (options: RetryCommandOptions) => {
       await runRetryCommand(options);
+    });
+
+  program
+    .command("reprocess")
+    .description("Requeue jobs for deterministic stage reprocessing")
+    .option(
+      "--citekey <key>",
+      "Reprocess jobs for a specific study only (compat selector; planned deprecation after first stable build in favor of rhizome_id/doi/pmid selectors)",
+    )
+    .option("--filter <expr>", "Reprocess studies selected by a supported filter expression")
+    .option("--stage <name>", "Pipeline stage to reprocess")
+    .option("--cascade", "Include downstream stage chain for the selected stage")
+    .option("--dry-run", "Report would-change counters without mutating queued jobs")
+    .option("--json", "Emit machine-readable JSON")
+    .action(async (options: ReprocessCommandOptions) => {
+      await runReprocessCommand(options);
     });
 
   const sync = program.command("sync").description("Sync external sources");

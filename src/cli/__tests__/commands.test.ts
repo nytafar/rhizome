@@ -13,6 +13,7 @@ import { runSyncZoteroCommand } from "../commands/sync";
 import { runProcessCommand } from "../commands/process";
 import { runStatusCommand } from "../commands/status";
 import { runRetryCommand } from "../commands/retry";
+import { runReprocessCommand } from "../commands/reprocess";
 import { runLockClearCommand, runLockStatusCommand } from "../commands/lock";
 import { CANONICAL_WORKSPACE_DIR, LEGACY_WORKSPACE_DIR } from "../../config/workspace-contract";
 import type { ZoteroItem } from "../../zotero/client";
@@ -1415,6 +1416,262 @@ describe("CLI command handlers", () => {
       const statusOverview = await runStatusCommand({ json: true }, { cwd: root });
       expect(statusOverview.mode).toBe("overview");
       expect(statusOverview.overview?.queue["summarize.queued"]).toBe(1);
+    });
+  });
+
+  test("reprocess --dry-run reports deterministic counters and performs zero mutation", async () => {
+    await withTempRhizome(async (root) => {
+      const dbPath = join(root, CANONICAL_WORKSPACE_DIR, "siss.db");
+      const database = new Database({ path: dbPath });
+      database.init();
+
+      seedRetryStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440121",
+        citekey: "lane2026reprocessdryrun",
+        title: "Reprocess dry-run target",
+      });
+
+      database.db
+        .query(
+          `
+          INSERT INTO jobs (rhizome_id, stage, status, retry_count, metadata)
+          VALUES
+            (?, ?, 'complete', 0, NULL),
+            (?, ?, 'error', 2, '{"last_error":"boom"}'),
+            (?, ?, 'complete', 0, NULL),
+            (?, ?, 'queued', 0, NULL);
+          `,
+        )
+        .run(
+          "550e8400-e29b-41d4-a716-446655440121",
+          PipelineStep.SUMMARIZE,
+          "550e8400-e29b-41d4-a716-446655440121",
+          PipelineStep.CLASSIFY,
+          "550e8400-e29b-41d4-a716-446655440121",
+          PipelineStep.VAULT_WRITE,
+          "550e8400-e29b-41d4-a716-446655440121",
+          PipelineStep.PDF_FETCH,
+        );
+
+      database.close();
+
+      const beforeDb = new Database({ path: dbPath });
+      beforeDb.init();
+      const beforeRows = beforeDb.db
+        .query(
+          `
+          SELECT stage, status, retry_count, error_message, error_class
+          FROM jobs
+          WHERE rhizome_id = ?
+          ORDER BY id ASC;
+          `,
+        )
+        .all("550e8400-e29b-41d4-a716-446655440121") as Array<{
+        stage: string;
+        status: string;
+        retry_count: number;
+        error_message: string | null;
+        error_class: string | null;
+      }>;
+      beforeDb.close();
+
+      const result = await runReprocessCommand(
+        {
+          citekey: "lane2026reprocessdryrun",
+          stage: PipelineStep.SUMMARIZE,
+          cascade: true,
+          dryRun: true,
+          json: true,
+        },
+        { cwd: root },
+      );
+
+      expect(result.dryRun).toBe(true);
+      expect(result.matchedStudies).toBe(1);
+      expect(result.matchedJobs).toBe(3);
+      expect(result.jobsRequeued).toBe(3);
+      expect(result.stages).toEqual([PipelineStep.SUMMARIZE, PipelineStep.CLASSIFY, PipelineStep.VAULT_WRITE]);
+      expect(result.stageCounters[PipelineStep.SUMMARIZE]).toBe(1);
+      expect(result.stageCounters[PipelineStep.CLASSIFY]).toBe(1);
+      expect(result.stageCounters[PipelineStep.VAULT_WRITE]).toBe(1);
+
+      const afterDb = new Database({ path: dbPath });
+      afterDb.init();
+      const afterRows = afterDb.db
+        .query(
+          `
+          SELECT stage, status, retry_count, error_message, error_class
+          FROM jobs
+          WHERE rhizome_id = ?
+          ORDER BY id ASC;
+          `,
+        )
+        .all("550e8400-e29b-41d4-a716-446655440121") as Array<{
+        stage: string;
+        status: string;
+        retry_count: number;
+        error_message: string | null;
+        error_class: string | null;
+      }>;
+      afterDb.close();
+
+      expect(afterRows).toEqual(beforeRows);
+    });
+  });
+
+  test("reprocess mutates selected stage chain and clears transient job error fields", async () => {
+    await withTempRhizome(async (root) => {
+      const dbPath = join(root, CANONICAL_WORKSPACE_DIR, "siss.db");
+      const database = new Database({ path: dbPath });
+      database.init();
+
+      seedRetryStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440122",
+        citekey: "lane2026reprocessmutate",
+        title: "Reprocess mutate target",
+      });
+
+      database.db
+        .query(
+          `
+          INSERT INTO jobs (rhizome_id, stage, status, retry_count, error_message, error_class, metadata)
+          VALUES
+            (?, ?, 'complete', 0, NULL, NULL, NULL),
+            (?, ?, 'paused', 3, 'retry exhausted', 'transient', '{"pause_reason":"manual"}'),
+            (?, ?, 'error', 1, 'classification failed', 'transient', '{"attempt":1}'),
+            (?, ?, 'processing', 0, NULL, NULL, NULL),
+            (?, ?, 'complete', 0, NULL, NULL, NULL);
+          `,
+        )
+        .run(
+          "550e8400-e29b-41d4-a716-446655440122",
+          PipelineStep.SUMMARIZE,
+          "550e8400-e29b-41d4-a716-446655440122",
+          PipelineStep.CLASSIFY,
+          "550e8400-e29b-41d4-a716-446655440122",
+          PipelineStep.VAULT_WRITE,
+          "550e8400-e29b-41d4-a716-446655440122",
+          PipelineStep.FULLTEXT_MARKER,
+          "550e8400-e29b-41d4-a716-446655440122",
+          PipelineStep.PDF_FETCH,
+        );
+
+      database.close();
+
+      const result = await runReprocessCommand(
+        {
+          citekey: "lane2026reprocessmutate",
+          stage: PipelineStep.SUMMARIZE,
+          cascade: true,
+          json: true,
+        },
+        { cwd: root },
+      );
+
+      expect(result.dryRun).toBe(false);
+      expect(result.matchedStudies).toBe(1);
+      expect(result.jobsRequeued).toBe(3);
+      expect(result.stageCounters[PipelineStep.SUMMARIZE]).toBe(1);
+      expect(result.stageCounters[PipelineStep.CLASSIFY]).toBe(1);
+      expect(result.stageCounters[PipelineStep.VAULT_WRITE]).toBe(1);
+
+      const verifyDb = new Database({ path: dbPath });
+      verifyDb.init();
+
+      const stageRows = verifyDb.db
+        .query(
+          `
+          SELECT stage, status, error_message, error_class
+          FROM jobs
+          WHERE rhizome_id = ?
+          ORDER BY id ASC;
+          `,
+        )
+        .all("550e8400-e29b-41d4-a716-446655440122") as Array<{
+        stage: string;
+        status: string;
+        error_message: string | null;
+        error_class: string | null;
+      }>;
+
+      verifyDb.close();
+
+      const byStage = new Map(stageRows.map((row) => [row.stage, row]));
+      expect(byStage.get(PipelineStep.SUMMARIZE)?.status).toBe("queued");
+      expect(byStage.get(PipelineStep.CLASSIFY)?.status).toBe("queued");
+      expect(byStage.get(PipelineStep.CLASSIFY)?.error_message).toBeNull();
+      expect(byStage.get(PipelineStep.CLASSIFY)?.error_class).toBeNull();
+      expect(byStage.get(PipelineStep.VAULT_WRITE)?.status).toBe("queued");
+      expect(byStage.get(PipelineStep.PDF_FETCH)?.status).toBe("complete");
+    });
+  });
+
+  test("reprocess rejects malformed selector/stage/filter combinations", async () => {
+    await withTempRhizome(async (root) => {
+      await expect(runReprocessCommand({ stage: PipelineStep.SUMMARIZE }, { cwd: root })).rejects.toThrow(
+        "Select exactly one reprocess target: use either --citekey <key> or --filter <expr>",
+      );
+
+      await expect(
+        runReprocessCommand(
+          { citekey: "lane2026x", filter: "has_summary=false", stage: PipelineStep.SUMMARIZE },
+          { cwd: root },
+        ),
+      ).rejects.toThrow("Select exactly one reprocess target: use either --citekey <key> or --filter <expr>");
+
+      await expect(runReprocessCommand({ citekey: "   ", stage: PipelineStep.SUMMARIZE }, { cwd: root })).rejects.toThrow(
+        "--citekey requires a non-empty value",
+      );
+
+      await expect(
+        runReprocessCommand({ citekey: "lane2026x", stage: "bogus_stage" }, { cwd: root }),
+      ).rejects.toThrow("Unknown stage 'bogus_stage'. Valid stages:");
+
+      await expect(
+        runReprocessCommand(
+          { filter: "pipeline_overall = 'complete'", stage: PipelineStep.SUMMARIZE },
+          { cwd: root },
+        ),
+      ).rejects.toThrow("Unsupported --filter expression");
+    });
+  });
+
+  test("reprocess reports unknown citekey, zero-match filters, and lock contention", async () => {
+    await withTempRhizome(async (root) => {
+      await expect(
+        runReprocessCommand(
+          { citekey: "lane2026missingstudy", stage: PipelineStep.SUMMARIZE },
+          { cwd: root },
+        ),
+      ).rejects.toThrow("Study not found for citekey=lane2026missingstudy");
+
+      const zeroMatch = await runReprocessCommand(
+        {
+          filter: "has_summary=true",
+          stage: PipelineStep.SUMMARIZE,
+          dryRun: true,
+          json: true,
+        },
+        { cwd: root },
+      );
+      expect(zeroMatch.matchedStudies).toBe(0);
+      expect(zeroMatch.matchedJobs).toBe(0);
+      expect(zeroMatch.jobsRequeued).toBe(0);
+
+      const config = await loadConfig(join(root, CANONICAL_WORKSPACE_DIR, "config.yaml"));
+      const lock = new WriterLock({
+        lockPath: join(root, config.pipeline.lock_path),
+        staleTimeoutMs: config.pipeline.lock_stale_minutes * 60 * 1000,
+      });
+      await lock.acquire("rhizome process", 5151);
+
+      await expect(
+        runReprocessCommand({ filter: "has_summary=false", stage: PipelineStep.SUMMARIZE }, { cwd: root }),
+      ).rejects.toThrow("writer already active");
+
+      await lock.release();
     });
   });
 
