@@ -719,7 +719,11 @@ export async function runProcessCommand(
     const result = aiMode
       ? combineResults(
           await orchestrator.processNonAI(),
-          await orchestrator.processAI({ batchSize: options.batch }),
+          await orchestrator.processAI({
+            batchSize: options.batch,
+            windows: ["00:00-23:59"],
+            timezone: "UTC",
+          }),
           await orchestrator.processNonAI(),
         )
       : await orchestrator.processNonAI();

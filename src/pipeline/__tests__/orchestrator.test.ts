@@ -129,7 +129,10 @@ describe("PipelineOrchestrator", () => {
         enqueued: 0,
       });
 
-      const aiResult = await orchestrator.processAI();
+      const aiResult = await orchestrator.processAI({
+        windows: ["00:00-23:59"],
+        timezone: "UTC",
+      });
       expect(aiResult).toEqual({
         processed: 1,
         succeeded: 1,
@@ -222,6 +225,191 @@ describe("PipelineOrchestrator", () => {
         status: "queued",
       });
       expect(fulltextQueued).toHaveLength(0);
+    });
+  });
+
+  test("processAI keeps AI jobs queued when window is inactive", async () => {
+    await withDatabase(async (database) => {
+      insertStudy(database, "SISS-005", "night2026hold");
+
+      const queue = new JobQueue(database.db);
+      const summarizeJobId = queue.enqueue({
+        rhizomeId: "SISS-005",
+        stage: PipelineStep.SUMMARIZE,
+        status: "queued",
+        aiWindowRequired: true,
+      });
+
+      const orchestrator = new PipelineOrchestrator({
+        db: database.db,
+        queue,
+        now: () => new Date("2026-03-27T10:00:00.000Z"),
+      });
+
+      orchestrator.registerStageHandler(PipelineStep.SUMMARIZE, async () => {
+        throw new Error("handler should not run outside AI window");
+      });
+
+      const result = await orchestrator.processAI({
+        windows: ["11:00-12:00"],
+        timezone: "UTC",
+      });
+
+      expect(result).toEqual({ processed: 0, succeeded: 0, failed: 0, enqueued: 0 });
+
+      const job = queue.query({ stage: PipelineStep.SUMMARIZE }).find((entry) => entry.id === summarizeJobId);
+      expect(job?.status).toBe("queued");
+    });
+  });
+
+  test("processAI applies cooldown between successful AI jobs", async () => {
+    await withDatabase(async (database) => {
+      insertStudy(database, "SISS-006", "cooldown2026");
+      insertStudy(database, "SISS-007", "cooldown2027");
+
+      const queue = new JobQueue(database.db);
+      queue.enqueue({
+        rhizomeId: "SISS-006",
+        stage: PipelineStep.SUMMARIZE,
+        status: "queued",
+        aiWindowRequired: true,
+      });
+      queue.enqueue({
+        rhizomeId: "SISS-007",
+        stage: PipelineStep.SUMMARIZE,
+        status: "queued",
+        aiWindowRequired: true,
+      });
+
+      const sleepCalls: number[] = [];
+      const orchestrator = new PipelineOrchestrator({
+        db: database.db,
+        queue,
+      });
+
+      orchestrator.registerStageHandler(PipelineStep.SUMMARIZE, async () => {
+        // no-op
+      });
+
+      const result = await orchestrator.processAI({
+        windows: ["00:00-23:59"],
+        timezone: "UTC",
+        cooldownSeconds: 2,
+        sleep: async (milliseconds) => {
+          sleepCalls.push(milliseconds);
+        },
+      });
+
+      expect(result).toEqual({ processed: 2, succeeded: 2, failed: 0, enqueued: 2 });
+      expect(sleepCalls).toEqual([2000]);
+    });
+  });
+
+  test("processAI stops mid-batch when window expires", async () => {
+    await withDatabase(async (database) => {
+      insertStudy(database, "SISS-008", "boundary2026a");
+      insertStudy(database, "SISS-009", "boundary2026b");
+
+      const queue = new JobQueue(database.db);
+      queue.enqueue({
+        rhizomeId: "SISS-008",
+        stage: PipelineStep.SUMMARIZE,
+        status: "queued",
+        aiWindowRequired: true,
+      });
+      queue.enqueue({
+        rhizomeId: "SISS-009",
+        stage: PipelineStep.SUMMARIZE,
+        status: "queued",
+        aiWindowRequired: true,
+      });
+
+      let nowCall = 0;
+      const nowValues = [
+        new Date("2026-03-27T10:30:00.000Z"),
+        new Date("2026-03-27T10:30:01.000Z"),
+        new Date("2026-03-27T10:30:02.000Z"),
+        new Date("2026-03-27T10:30:03.000Z"),
+        new Date("2026-03-27T11:30:00.000Z"),
+      ];
+      const orchestrator = new PipelineOrchestrator({
+        db: database.db,
+        queue,
+        now: () => {
+          const value = nowValues[Math.min(nowCall, nowValues.length - 1)];
+          nowCall += 1;
+          return value;
+        },
+      });
+
+      orchestrator.registerStageHandler(PipelineStep.SUMMARIZE, async () => {
+        // no-op
+      });
+
+      const result = await orchestrator.processAI({
+        windows: ["10:00-11:00"],
+        timezone: "UTC",
+      });
+
+      expect(result).toEqual({ processed: 1, succeeded: 1, failed: 0, enqueued: 1 });
+      const queued = queue.query({ stage: PipelineStep.SUMMARIZE, status: "queued" });
+      expect(queued).toHaveLength(1);
+      expect(queued[0]?.rhizomeId).toBe("SISS-009");
+    });
+  });
+
+  test("processAI rejects malformed window config and preserves queued jobs", async () => {
+    await withDatabase(async (database) => {
+      insertStudy(database, "SISS-010", "malformed2026");
+
+      const queue = new JobQueue(database.db);
+      const jobId = queue.enqueue({
+        rhizomeId: "SISS-010",
+        stage: PipelineStep.SUMMARIZE,
+        status: "queued",
+        aiWindowRequired: true,
+      });
+
+      const orchestrator = new PipelineOrchestrator({
+        db: database.db,
+        queue,
+      });
+
+      await expect(
+        orchestrator.processAI({
+          windows: [],
+          timezone: "UTC",
+        }),
+      ).rejects.toThrow("Invalid AI window configuration");
+
+      const job = queue.query({ stage: PipelineStep.SUMMARIZE }).find((entry) => entry.id === jobId);
+      expect(job?.status).toBe("queued");
+    });
+  });
+
+  test("processAI surfaces queue errors when window is active", async () => {
+    await withDatabase(async (database) => {
+      const queue = new JobQueue(database.db);
+      const orchestrator = new PipelineOrchestrator({
+        db: database.db,
+        queue,
+      });
+
+      const querySpy = () => {
+        throw new Error("queue query failure");
+      };
+
+      const originalQuery = queue.query.bind(queue);
+      queue.query = querySpy as unknown as typeof queue.query;
+
+      await expect(
+        orchestrator.processAI({
+          windows: ["00:00-23:59"],
+          timezone: "UTC",
+        }),
+      ).rejects.toThrow("queue query failure");
+
+      queue.query = originalQuery;
     });
   });
 

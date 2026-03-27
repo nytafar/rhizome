@@ -1,5 +1,6 @@
 import type { Database as BunSQLiteDatabase } from "bun:sqlite";
 import { JobQueue, type QueueJob } from "../queue/job-queue";
+import { evaluateAiWindows, type EvaluateAiWindowsResult } from "./ai-window";
 import {
   PipelineOverallStatus,
   PipelineStep,
@@ -16,6 +17,19 @@ export interface ProcessResult {
 
 export interface ProcessAIOptions {
   batchSize?: number;
+  windows: string[];
+  timezone: string;
+  cooldownSeconds?: number;
+  sleep?: (milliseconds: number) => Promise<void>;
+}
+
+interface ProcessQueueOptions {
+  ai: boolean;
+  batchSize?: number;
+  windows?: string[];
+  timezone?: string;
+  cooldownSeconds: number;
+  sleep: (milliseconds: number) => Promise<void>;
 }
 
 export interface PipelineOrchestratorEvent {
@@ -80,6 +94,10 @@ const REQUIRED_PHASE1_STEPS: PipelineStep[] = [
   PipelineStep.VAULT_WRITE,
 ];
 
+function defaultSleep(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
 export function derivePipelineOverall(
   pipelineSteps: Record<string, PipelineStepState>,
   requiredSteps: PipelineStep[] = REQUIRED_PHASE1_STEPS,
@@ -137,14 +155,25 @@ export class PipelineOrchestrator {
   }
 
   public async processNonAI(): Promise<ProcessResult> {
-    return this.processQueue({ ai: false });
+    return this.processQueue({
+      ai: false,
+      cooldownSeconds: 0,
+      sleep: defaultSleep,
+    });
   }
 
-  public async processAI(options: ProcessAIOptions = {}): Promise<ProcessResult> {
-    return this.processQueue({ ai: true, batchSize: options.batchSize });
+  public async processAI(options: ProcessAIOptions): Promise<ProcessResult> {
+    return this.processQueue({
+      ai: true,
+      batchSize: options.batchSize,
+      windows: options.windows,
+      timezone: options.timezone,
+      cooldownSeconds: options.cooldownSeconds ?? 0,
+      sleep: options.sleep ?? defaultSleep,
+    });
   }
 
-  private async processQueue(options: { ai: boolean; batchSize?: number }): Promise<ProcessResult> {
+  private async processQueue(options: ProcessQueueOptions): Promise<ProcessResult> {
     const result: ProcessResult = {
       processed: 0,
       succeeded: 0,
@@ -153,8 +182,16 @@ export class PipelineOrchestrator {
     };
 
     const runId = this.buildRunId();
+    const cooldownMilliseconds = Math.max(0, options.cooldownSeconds * 1_000);
 
     while (options.batchSize === undefined || result.processed < options.batchSize) {
+      if (options.ai) {
+        const windowState = this.evaluateAiWindowState(options);
+        if (!windowState.active) {
+          break;
+        }
+      }
+
       const nextJob = this.pickNextJob(options.ai);
       if (!nextJob) {
         break;
@@ -166,12 +203,52 @@ export class PipelineOrchestrator {
       if (didSucceed) {
         result.succeeded += 1;
         result.enqueued += this.enqueueNextStage(nextJob);
+
+        if (options.ai && cooldownMilliseconds > 0) {
+          const hasRemainingBatchCapacity = options.batchSize === undefined || result.processed < options.batchSize;
+          const hasQueuedAiWork = this.pickNextJob(true) !== null;
+
+          if (hasRemainingBatchCapacity && hasQueuedAiWork) {
+            const windowState = this.evaluateAiWindowState(options);
+            if (!windowState.active) {
+              break;
+            }
+
+            await options.sleep(cooldownMilliseconds);
+          }
+        }
       } else {
         result.failed += 1;
       }
     }
 
     return result;
+  }
+
+  private evaluateAiWindowState(options: ProcessQueueOptions): EvaluateAiWindowsResult & { ok: true } {
+    if (!options.ai) {
+      return {
+        ok: true,
+        active: true,
+        localMinutes: 0,
+        localTime: "00:00",
+        parsedWindows: [],
+      };
+    }
+
+    const windows = options.windows ?? [];
+    const timezone = options.timezone ?? "";
+    const evaluation = evaluateAiWindows({
+      windows,
+      timezone,
+      now: this.now(),
+    });
+
+    if (!evaluation.ok) {
+      throw new Error(`Invalid AI window configuration: ${evaluation.error.message}`);
+    }
+
+    return evaluation;
   }
 
   private pickNextJob(ai: boolean): QueueJob | null {
