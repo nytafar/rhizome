@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtemp, mkdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { parseAndValidateConfig } from "../../config/loader";
@@ -18,6 +18,21 @@ const SUCCESS_RESULT: InitSubprocessResult = {
 
 type RunnerStub = (request: InitSubprocessRequest) => Promise<InitSubprocessResult>;
 
+const BASE_ARTIFACT_EXPECTATIONS = [
+  {
+    fileName: "studies.base",
+    anchors: ['filters: \'note_type == "study"\'', "tier_6_taxonomy.therapeutic_areas"],
+  },
+  {
+    fileName: "fulltexts.base",
+    anchors: ['filters: \'note_type == "study" && has_fulltext == true\'', 'name: "Fulltexts"'],
+  },
+  {
+    fileName: "review-queue.base",
+    anchors: ['name: "Review Queue"', "tier_7_provisional"],
+  },
+] as const;
+
 function makeInitArgs(vaultPath: string) {
   return {
     nonInteractive: true,
@@ -29,6 +44,7 @@ function makeInitArgs(vaultPath: string) {
     aiWindows: "17:00-19:00,23:00-01:00",
     timezone: "Europe/Oslo",
     zoteroCollections: "Adaptogens,Clinical Trials",
+    force: true,
   } as const;
 }
 
@@ -81,6 +97,20 @@ describe("rhizome init", () => {
         expectedDirs.map(async (dir) => {
           const dirInfo = await stat(dir);
           expect(dirInfo.isDirectory()).toBe(true);
+        }),
+      );
+
+      const systemDir = join(vaultPath, "Research", "_system");
+      await Promise.all(
+        BASE_ARTIFACT_EXPECTATIONS.map(async ({ fileName, anchors }) => {
+          const artifactPath = join(systemDir, fileName);
+          const artifactStat = await stat(artifactPath);
+          expect(artifactStat.isFile()).toBe(true);
+
+          const content = await readFile(artifactPath, "utf8");
+          for (const anchor of anchors) {
+            expect(content).toContain(anchor);
+          }
         }),
       );
 
@@ -243,6 +273,87 @@ describe("rhizome init", () => {
           },
         }),
       ).rejects.toThrow("Marker runtime is unhealthy. Re-run 'rhizome init --force' to reinstall the parser environment.");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("writes .base artifacts under custom research root _system path", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rhizome-cli-init-custom-research-root-"));
+
+    try {
+      const vaultPath = join(root, "vault");
+      await mkdir(vaultPath, { recursive: true });
+
+      await runInitCommand(
+        {
+          ...makeInitArgs(vaultPath),
+          researchRoot: "LabNotes",
+        },
+        {
+          cwd: root,
+          runSubprocess: async () => SUCCESS_RESULT,
+        },
+      );
+
+      const systemDir = join(vaultPath, "LabNotes", "_system");
+      await Promise.all(
+        BASE_ARTIFACT_EXPECTATIONS.map(async ({ fileName }) => {
+          const artifactPath = join(systemDir, fileName);
+          const artifactStat = await stat(artifactPath);
+          expect(artifactStat.isFile()).toBe(true);
+        }),
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("rerun with --force refreshes existing .base artifacts deterministically", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rhizome-cli-init-base-refresh-"));
+
+    try {
+      const vaultPath = join(root, "vault");
+      await mkdir(vaultPath, { recursive: true });
+
+      await runInitCommand(makeInitArgs(vaultPath), {
+        cwd: root,
+        runSubprocess: async () => SUCCESS_RESULT,
+      });
+
+      const studiesPath = join(vaultPath, "Research", "_system", "studies.base");
+      await writeFile(studiesPath, "manually changed\n", "utf8");
+
+      await runInitCommand(makeInitArgs(vaultPath), {
+        cwd: root,
+        runSubprocess: async () => SUCCESS_RESULT,
+      });
+
+      const refreshed = await readFile(studiesPath, "utf8");
+      expect(refreshed).toContain('filters: \'note_type == "study"\'');
+      expect(refreshed).toContain("tier_6_taxonomy.therapeutic_areas");
+      expect(refreshed).not.toContain("manually changed");
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  test("fails init with explicit context when base generation fails", async () => {
+    const root = await mkdtemp(join(tmpdir(), "rhizome-cli-init-base-failure-"));
+
+    try {
+      const vaultPath = join(root, "vault");
+      await mkdir(vaultPath, { recursive: true });
+
+      await expect(
+        runInitCommand(makeInitArgs(vaultPath), {
+          cwd: root,
+          runSubprocess: async () => SUCCESS_RESULT,
+          writeBasesArtifactsFn: async () => {
+            throw new Error("synthetic base write failure");
+          },
+        }),
+      ).rejects.toThrow("Failed to generate Obsidian base artifacts during init: synthetic base write failure");
     } finally {
       await rm(root, { recursive: true, force: true });
     }

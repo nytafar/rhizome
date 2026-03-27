@@ -4,6 +4,7 @@ import { createInterface } from "node:readline/promises";
 import { stdin as defaultStdin, stdout as defaultStdout } from "node:process";
 import { Database } from "../../db/database";
 import { ensureVaultFolderStructure } from "../../vault/folder-creator";
+import { writeBasesArtifacts } from "../../vault/bases";
 import { parseAndValidateConfig } from "../../config/loader";
 
 const DEFAULT_RESEARCH_ROOT = "Research";
@@ -64,12 +65,15 @@ export type InitSubprocessRunner = (
   request: InitSubprocessRequest,
 ) => Promise<InitSubprocessResult>;
 
+export type InitBasesWriter = typeof writeBasesArtifacts;
+
 export interface InitCommandDeps {
   cwd?: string;
   stdout?: Pick<typeof defaultStdout, "write">;
   stdin?: typeof defaultStdin;
   prompt?: InitPrompt;
   runSubprocess?: InitSubprocessRunner;
+  writeBasesArtifactsFn?: InitBasesWriter;
 }
 
 class InitSubprocessTimeoutError extends Error {
@@ -540,6 +544,14 @@ export async function runInitCommand(
       system_folder: "_system",
     },
   });
+
+  const basesWriter = deps.writeBasesArtifactsFn ?? writeBasesArtifacts;
+  try {
+    await basesWriter(parsedConfig);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to generate Obsidian base artifacts during init: ${message}`);
+  }
 
   await bootstrapMarkerRuntime(deps, cwd, parsedConfig.parser.marker);
 
