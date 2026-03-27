@@ -75,3 +75,62 @@ export interface StudyRecord {
   source_tags?: string[];
   date_added?: string;
 }
+
+// Projection boundary for note frontmatter serialization/parsing.
+// Keep this separate from StudyRecord so orchestration/DB internals can evolve
+// independently of the markdown contract.
+export interface StudyFrontmatterProjection {
+  // Identity
+  rhizome_id?: string;
+  note_type: "study";
+
+  // Pipeline surface
+  has_pdf: boolean;
+  has_fulltext: boolean;
+  has_summary: boolean;
+  has_classification: boolean;
+  pipeline_status: "complete" | "partial" | "failed" | "pending";
+  pipeline_error?: string | null;
+  last_pipeline_run?: string;
+
+  // Bibliographic
+  title: string;
+  authors: Author[];
+  year: number;
+  journal?: string;
+  doi?: string;
+  pmid?: string;
+  pmcid?: string;
+  isbn?: string;
+  abstract?: string;
+  url?: string;
+  item_type?: string;
+
+  // Zotero
+  zotero_key?: string;
+  source_collections?: string[];
+
+  // Tags
+  tags?: string[];
+
+  // Assets (wikilinks)
+  pdf?: string;
+  fulltext?: string;
+  summary?: string;
+  user_note?: string | null;
+  pdf_available: boolean;
+  pdf_source?: "zotero" | "europepmc" | "unpaywall" | "openalex" | "manual";
+
+  // AI provenance
+  summary_skill?: string;
+  classifier_skill?: string;
+  summary_generated_at?: string;
+  classifier_generated_at?: string;
+  summary_versions?: string[];
+
+  // User fields
+  user_rating?: number | null;
+  user_priority?: "high" | "medium" | "low" | null;
+  user_status?: "reading" | "read" | "flagged" | null;
+  notes?: string;
+}

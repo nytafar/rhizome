@@ -15,7 +15,7 @@ export interface EvidenceCommandRecord<T = unknown> {
 export interface EvidenceDbSnapshot {
   generatedAt: string;
   studies: Array<{
-    siss_id: string;
+    rhizome_id: string;
     citekey: string;
     title: string | null;
     pipeline_overall: string;
@@ -24,7 +24,7 @@ export interface EvidenceDbSnapshot {
   }>;
   jobs: Array<{
     id: number;
-    siss_id: string;
+    rhizome_id: string;
     stage: string;
     status: string;
     retry_count: number;

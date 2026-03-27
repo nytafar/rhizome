@@ -128,7 +128,7 @@ rhizome sync zotero --full    # force full sync, resets library_version to 0
 | `data.collections` | `source_collections` | Collection keys → resolve to names |
 | `data.dateAdded` | `date_added` | |
 
-> **v0.3 changes:** `source_tags` renamed to `tags` (single Obsidian-native field, initial-ingest-only). `volume`, `issue`, `pages` still mapped internally but not projected to frontmatter. `zotero_version` stored as SQLite column instead of in `pipeline_steps_json`.
+> **v0.3 changes:** Frontmatter uses a single Obsidian-native `tags` field (initial-ingest-only write semantics). `volume`, `issue`, `pages` still mapped internally but not projected to frontmatter. `zotero_version` stored as SQLite column instead of in `pipeline_steps_json`.
 
 ### PMID Extraction from Extra Field
 Zotero stores PMID in the `extra` field (no dedicated field):

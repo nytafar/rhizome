@@ -7,7 +7,7 @@ import {
   PipelineStepStatus,
 } from "../../types/pipeline";
 import type { StudyRecord } from "../../types/study";
-import { buildStudyNoteMarkdown } from "../note-builder";
+import { buildStudyNoteMarkdown, mergeFrontmatterProjection } from "../note-builder";
 
 function baseStudyFixture(): StudyRecord {
   return {
@@ -78,10 +78,60 @@ describe("buildStudyNoteMarkdown", () => {
     const frontmatter = parseStudyFrontmatter(parsed.data);
 
     expect(frontmatter.note_type).toBe("study");
-    expect(frontmatter.citekey).toBe("smith2023ashwagandha");
-    expect(frontmatter.pipeline_steps[PipelineStep.SUMMARIZE]?.status).toBe(
-      PipelineStepStatus.COMPLETE,
+    expect(frontmatter.doi).toBe("10.1016/j.phymed.2023.01.012");
+    expect(frontmatter.pipeline_status).toBe("partial");
+    expect(frontmatter.summary).toBe(
+      "[[Research/studies/_assets/smith2023ashwagandha/summary.current.md|AI Summary]]",
     );
+  });
+
+  test("preserves user-managed frontmatter fields and write-once tags when existing frontmatter is provided", () => {
+    const study = baseStudyFixture();
+
+    const markdown = buildStudyNoteMarkdown(study, {
+      tags: ["user-tag", "keep-this"],
+      user_rating: 5,
+      user_priority: "high",
+      user_status: "reading",
+      user_note: "[[Research/study-notes/smith2023ashwagandha.note|My Notes]]",
+      notes: "User annotations",
+    });
+
+    const parsed = matter(markdown);
+    const frontmatter = parseStudyFrontmatter(parsed.data);
+
+    expect(frontmatter.tags).toEqual(["user-tag", "keep-this"]);
+    expect(frontmatter.user_rating).toBe(5);
+    expect(frontmatter.user_priority).toBe("high");
+    expect(frontmatter.user_status).toBe("reading");
+    expect(frontmatter.user_note).toBe("[[Research/study-notes/smith2023ashwagandha.note|My Notes]]");
+    expect(frontmatter.notes).toBe("User annotations");
+  });
+
+  test("mergeFrontmatterProjection keeps machine fields while preserving user-owned keys", () => {
+    const merged = mergeFrontmatterProjection({
+      machine: {
+        note_type: "study",
+        has_pdf: false,
+        has_fulltext: false,
+        has_summary: false,
+        has_classification: false,
+        pipeline_status: "pending",
+        title: "Machine title",
+        authors: [{ family: "Machine", given: "Author" }],
+        year: 2024,
+        pdf_available: false,
+      },
+      existing: {
+        tags: ["my-tag"],
+        user_priority: "low",
+      },
+    });
+
+    expect(merged.tags).toEqual(["my-tag"]);
+    expect(merged.user_priority).toBe("low");
+    expect(merged.title).toBe("Machine title");
+    expect(merged.pipeline_status).toBe("pending");
   });
 
   test("gracefully handles missing optional fulltext, summary, and classifier metadata", () => {
@@ -98,8 +148,8 @@ describe("buildStudyNoteMarkdown", () => {
     expect(markdown).toContain("> Abstract unavailable.");
     expect(markdown).toContain("## TL;DR\n_Summary not available yet._");
     expect(markdown).toContain("## Key Findings\n_Summary not available yet._");
-    expect(markdown).toContain("- _Not available_");
-    expect(markdown).toContain("| — | classify | — | — |");
+    expect(markdown).toContain("| — | classify | — |");
+    expect(markdown).toContain("## Links");
 
     const parsed = matter(markdown);
     expect(() => parseStudyFrontmatter(parsed.data)).not.toThrow();

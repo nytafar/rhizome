@@ -47,7 +47,7 @@ export async function captureSummarizeFailureEvidence(root: string): Promise<Sum
         `
           SELECT s.citekey AS citekey, j.error_message AS errorMessage, j.completed_at AS completedAt
           FROM jobs j
-          JOIN studies s ON s.siss_id = j.siss_id
+          JOIN studies s ON s.rhizome_id = j.rhizome_id
           WHERE j.stage = ?
             AND j.status = 'error'
           ORDER BY j.id DESC;

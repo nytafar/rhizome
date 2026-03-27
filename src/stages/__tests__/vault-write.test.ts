@@ -28,6 +28,7 @@ async function makeTempDir(prefix: string): Promise<string> {
 function buildStudyFixture(): StudyRecord {
   return {
     siss_id: "550e8400-e29b-41d4-a716-446655440000",
+    rhizome_id: "550e8400-e29b-41d4-a716-446655440000",
     citekey: "smith2023ashwagandha",
     title: "Ashwagandha root extract reduces cortisol in chronically stressed adults",
     authors: [
@@ -76,12 +77,12 @@ describe("runVaultWriteStage", () => {
     database.db
       .query(
         `
-        INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+        INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
         VALUES (?, ?, ?, ?, ?, ?);
         `,
       )
       .run(
-        study.siss_id,
+        study.rhizome_id,
         study.citekey,
         study.source,
         study.title,
@@ -103,24 +104,26 @@ describe("runVaultWriteStage", () => {
     );
     expect(result.metadata.stage).toBe(PipelineStep.VAULT_WRITE);
     expect(result.metadata.frontmatterValid).toBe(true);
+    expect(result.metadata.preservedKeys).toEqual([]);
+    expect(result.metadata.malformedFrontmatter).toBe(false);
 
     const parsedMatter = matter(await readFile(result.notePath, "utf8"));
     const frontmatter = parseStudyFrontmatter(parsedMatter.data);
 
-    expect(frontmatter.citekey).toBe("smith2023ashwagandha");
-    expect(frontmatter.pipeline_steps[PipelineStep.VAULT_WRITE]?.status).toBe(
-      PipelineStepStatus.COMPLETE,
-    );
-    expect(frontmatter.asset_dir).toBe("Research/studies/_assets/smith2023ashwagandha/");
+    expect(frontmatter.note_type).toBe("study");
+    expect(frontmatter.rhizome_id).toBe(study.rhizome_id);
+    expect(frontmatter.pipeline_status).toBe("partial");
+    expect(frontmatter.has_summary).toBe(false);
+    expect(frontmatter.pdf_available).toBe(false);
 
     const assetDirStat = await stat(result.assetDirPath);
     expect(assetDirStat.isDirectory()).toBe(true);
 
     const dbStudyRow = database.db
       .query(
-        "SELECT pipeline_steps_json FROM studies WHERE siss_id = ? LIMIT 1;",
+        "SELECT pipeline_steps_json FROM studies WHERE rhizome_id = ? LIMIT 1;",
       )
-      .get(study.siss_id) as { pipeline_steps_json: string };
+      .get(study.rhizome_id) as { pipeline_steps_json: string };
 
     const pipelineSteps = JSON.parse(dbStudyRow.pipeline_steps_json) as Record<
       string,
@@ -133,12 +136,12 @@ describe("runVaultWriteStage", () => {
         `
         SELECT stage, status, metadata
         FROM job_stage_log
-        WHERE siss_id = ?
+        WHERE rhizome_id = ?
         ORDER BY id DESC
         LIMIT 1;
         `,
       )
-      .get(study.siss_id) as { stage: string; status: string; metadata: string };
+      .get(study.rhizome_id) as { stage: string; status: string; metadata: string };
 
     expect(stageLog.stage).toBe(PipelineStep.VAULT_WRITE);
     expect(stageLog.status).toBe("completed");
@@ -147,11 +150,15 @@ describe("runVaultWriteStage", () => {
       note_path: string;
       asset_dir: string;
       frontmatter_valid: boolean;
+      preserved_keys: string[];
+      malformed_frontmatter: boolean;
     };
 
     expect(metadata.note_path).toBe("Research/studies/smith2023ashwagandha.md");
     expect(metadata.asset_dir).toBe("Research/studies/_assets/smith2023ashwagandha/");
     expect(metadata.frontmatter_valid).toBe(true);
+    expect(metadata.preserved_keys).toEqual([]);
+    expect(metadata.malformed_frontmatter).toBe(false);
 
     database.close();
   });
@@ -168,12 +175,12 @@ describe("runVaultWriteStage", () => {
     database.db
       .query(
         `
-        INSERT INTO studies (siss_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+        INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
         VALUES (?, ?, ?, ?, ?, ?);
         `,
       )
       .run(
-        study.siss_id,
+        study.rhizome_id,
         study.citekey,
         study.source,
         study.title,
@@ -200,6 +207,172 @@ describe("runVaultWriteStage", () => {
     const written = await readFile(notePath, "utf8");
     expect(written).toContain("# Updated title for overwrite verification");
     expect(written).not.toContain("legacy-content");
+
+    database.close();
+  });
+  test("reads existing note frontmatter and preserves user-managed fields", async () => {
+    const root = await makeTempDir("rhizome-vault-write-");
+    const dbPath = join(root, "rhizome.sqlite");
+
+    const database = new Database({ path: dbPath });
+    database.init();
+
+    const study = buildStudyFixture();
+
+    database.db
+      .query(
+        `
+        INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+        VALUES (?, ?, ?, ?, ?, ?);
+        `,
+      )
+      .run(
+        study.rhizome_id,
+        study.citekey,
+        study.source,
+        study.title,
+        study.pipeline_overall,
+        JSON.stringify(study.pipeline_steps),
+      );
+
+    const notePath = join(root, "Research", "studies", "smith2023ashwagandha.md");
+    await Bun.write(
+      notePath,
+      [
+        "---",
+        "note_type: study",
+        "has_pdf: false",
+        "has_fulltext: false",
+        "has_summary: false",
+        "has_classification: false",
+        "pipeline_status: partial",
+        "title: Legacy",
+        "authors:",
+        "  - family: Legacy",
+        "    given: User",
+        "year: 2020",
+        "pdf_available: false",
+        "tags:",
+        "  - manual-tag",
+        "user_rating: 4",
+        "user_status: reading",
+        "notes: keep me",
+        "---",
+        "# Legacy",
+      ].join("\n"),
+    );
+
+    const result = await runVaultWriteStage({
+      db: database.db,
+      study,
+      vaultPath: root,
+      vault: VAULT_CONFIG,
+      now: () => new Date("2026-03-25T22:56:00.000Z"),
+    });
+
+    const parsedMatter = matter(await readFile(result.notePath, "utf8"));
+    const frontmatter = parseStudyFrontmatter(parsedMatter.data);
+
+    expect(frontmatter.tags).toEqual(["manual-tag"]);
+    expect(frontmatter.user_rating).toBe(4);
+    expect(frontmatter.user_status).toBe("reading");
+    expect(frontmatter.notes).toBe("keep me");
+    expect(result.metadata.preservedKeys.sort()).toEqual(["notes", "tags", "user_rating", "user_status"]);
+    expect(result.metadata.malformedFrontmatter).toBe(false);
+
+    const stageLog = database.db
+      .query(
+        `
+        SELECT metadata
+        FROM job_stage_log
+        WHERE rhizome_id = ?
+        ORDER BY id DESC
+        LIMIT 1;
+        `,
+      )
+      .get(study.rhizome_id) as { metadata: string };
+
+    const metadata = JSON.parse(stageLog.metadata) as {
+      preserved_keys: string[];
+      malformed_frontmatter: boolean;
+    };
+    expect(metadata.preserved_keys.sort()).toEqual(["notes", "tags", "user_rating", "user_status"]);
+    expect(metadata.malformed_frontmatter).toBe(false);
+
+    database.close();
+  });
+
+  test("falls back to fresh write and warning metadata when existing frontmatter is malformed", async () => {
+    const root = await makeTempDir("rhizome-vault-write-");
+    const dbPath = join(root, "rhizome.sqlite");
+
+    const database = new Database({ path: dbPath });
+    database.init();
+
+    const study = buildStudyFixture();
+
+    database.db
+      .query(
+        `
+        INSERT INTO studies (rhizome_id, citekey, source, title, pipeline_overall, pipeline_steps_json)
+        VALUES (?, ?, ?, ?, ?, ?);
+        `,
+      )
+      .run(
+        study.rhizome_id,
+        study.citekey,
+        study.source,
+        study.title,
+        study.pipeline_overall,
+        JSON.stringify(study.pipeline_steps),
+      );
+
+    const notePath = join(root, "Research", "studies", "smith2023ashwagandha.md");
+    await Bun.write(
+      notePath,
+      [
+        "---",
+        "note_type: study",
+        "tags:",
+        "  - broken",
+        "# missing closing frontmatter fence on purpose",
+      ].join("\n"),
+    );
+
+    const result = await runVaultWriteStage({
+      db: database.db,
+      study,
+      vaultPath: root,
+      vault: VAULT_CONFIG,
+      now: () => new Date("2026-03-25T22:57:00.000Z"),
+    });
+
+    expect(result.metadata.malformedFrontmatter).toBe(true);
+    expect(result.metadata.preservedKeys).toEqual([]);
+
+    const parsedMatter = matter(await readFile(result.notePath, "utf8"));
+    const frontmatter = parseStudyFrontmatter(parsedMatter.data);
+    expect(frontmatter.note_type).toBe("study");
+
+    const stageLog = database.db
+      .query(
+        `
+        SELECT metadata
+        FROM job_stage_log
+        WHERE rhizome_id = ?
+        ORDER BY id DESC
+        LIMIT 1;
+        `,
+      )
+      .get(study.rhizome_id) as { metadata: string };
+
+    const metadata = JSON.parse(stageLog.metadata) as {
+      malformed_frontmatter: boolean;
+      preserved_keys: string[];
+    };
+
+    expect(metadata.malformed_frontmatter).toBe(true);
+    expect(metadata.preserved_keys).toEqual([]);
 
     database.close();
   });
