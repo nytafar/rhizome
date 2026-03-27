@@ -134,6 +134,41 @@ describe("buildStudyNoteMarkdown", () => {
     expect(merged.pipeline_status).toBe("pending");
   });
 
+  test("projects summary_versions with archived versions in ascending order and current last", () => {
+    const study = baseStudyFixture();
+    study.summary_versions = [
+      "Research/studies/_assets/smith2023ashwagandha/summary.v2.md",
+      "Research/studies/_assets/smith2023ashwagandha/not-a-summary.md",
+      "Research/studies/_assets/smith2023ashwagandha/summary.v1.md",
+      "",
+      "Research/studies/_assets/smith2023ashwagandha/summary.current.md",
+      "Research/studies/_assets/smith2023ashwagandha/summary.vx.md",
+    ];
+
+    const markdown = buildStudyNoteMarkdown(study);
+    const parsed = matter(markdown);
+    const frontmatter = parseStudyFrontmatter(parsed.data);
+
+    expect(frontmatter.summary_versions).toEqual([
+      "[[Research/studies/_assets/smith2023ashwagandha/summary.v1.md|v1]]",
+      "[[Research/studies/_assets/smith2023ashwagandha/summary.v2.md|v2]]",
+      "[[Research/studies/_assets/smith2023ashwagandha/summary.current.md|current]]",
+    ]);
+  });
+
+  test("falls back to current-only summary_versions when no archive versions are supplied", () => {
+    const study = baseStudyFixture();
+    delete study.summary_versions;
+
+    const markdown = buildStudyNoteMarkdown(study);
+    const parsed = matter(markdown);
+    const frontmatter = parseStudyFrontmatter(parsed.data);
+
+    expect(frontmatter.summary_versions).toEqual([
+      "[[Research/studies/_assets/smith2023ashwagandha/summary.current.md|current]]",
+    ]);
+  });
+
   test("gracefully handles missing optional fulltext, summary, and classifier metadata", () => {
     const study = baseStudyFixture();
     delete study.abstract;

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { mkdtemp, readFile, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
@@ -92,6 +92,106 @@ describe("runSummarizeStage", () => {
     expect(written).toContain('study_ref: smith2026adaptogen');
     expect(written).toContain('source: "abstract_only"');
     expect(written).toContain("## TL;DR\nAbstract-level summary.");
+  });
+
+  test("archives existing summary.current.md to next summary.vN.md before replacing current", async () => {
+    const root = await makeTempDir("rhizome-summarize-");
+    const studyAssetsDir = join(root, "_assets", "smith2026archive");
+    await mkdir(studyAssetsDir, { recursive: true });
+    await Bun.write(join(studyAssetsDir, "summary.current.md"), "OLD CURRENT");
+    await Bun.write(join(studyAssetsDir, "summary.v1.md"), "OLDER V1");
+    await Bun.write(join(studyAssetsDir, "summary.v2.md"), "OLDER V2");
+    await Bun.write(join(studyAssetsDir, "summary.vx.md"), "MALFORMED");
+    await Bun.write(join(studyAssetsDir, "random.txt"), "IGNORE");
+
+    const invoke: InvokeStub = async () => ({
+      exitCode: 0,
+      stderr: "",
+      durationMs: 901,
+      stdout: JSON.stringify({
+        source: "abstract_only",
+        tldr: "New summary text.",
+        background: "Background",
+        methods: "Methods",
+        key_findings: "Findings",
+        clinical_relevance: "Relevance",
+        limitations: "Limitations",
+      }),
+    });
+
+    const result = await runSummarizeStage({
+      study: {
+        citekey: "smith2026archive",
+        title: "Archive rotation study",
+        authors: [{ given: "Jane", family: "Smith" }],
+        year: 2026,
+        abstract: "Abstract body.",
+      },
+      assetsRootDir: join(root, "_assets"),
+      skillsDir: ".siss/skills",
+      summarizerSkillFile: "summarizer.md",
+      skillVersion: "1.0",
+      model: "claude-sonnet-4",
+      maxTurns: 10,
+      timeoutMs: 30_000,
+      invoke,
+    });
+
+    const archived = await readFile(join(studyAssetsDir, "summary.v3.md"), "utf8");
+    const current = await readFile(result.summaryPath, "utf8");
+
+    expect(archived).toBe("OLD CURRENT");
+    expect(current).toContain("## TL;DR\nNew summary text.");
+
+    const filenames = await readdir(studyAssetsDir);
+    expect(filenames.filter((name) => name.includes("summary.current.tmp"))).toHaveLength(0);
+  });
+
+  test("first overwrite creates summary.v1.md and second overwrite creates summary.v2.md", async () => {
+    const root = await makeTempDir("rhizome-summarize-");
+
+    const makeInvoke = (tldr: string): InvokeStub => {
+      return async () => ({
+        exitCode: 0,
+        stderr: "",
+        durationMs: 700,
+        stdout: JSON.stringify({
+          source: "abstract_only",
+          tldr,
+          background: "Background",
+          methods: "Methods",
+          key_findings: "Findings",
+          clinical_relevance: "Relevance",
+          limitations: "Limitations",
+        }),
+      });
+    };
+
+    const baseInput = {
+      study: {
+        citekey: "smith2026monotonic",
+        title: "Monotonic archive study",
+        authors: [{ given: "Jane", family: "Smith" }],
+        year: 2026,
+        abstract: "Abstract body.",
+      },
+      assetsRootDir: join(root, "_assets"),
+      skillsDir: ".siss/skills",
+      summarizerSkillFile: "summarizer.md",
+      skillVersion: "1.0",
+      model: "claude-sonnet-4",
+      maxTurns: 10,
+      timeoutMs: 30_000,
+    } as const;
+
+    await runSummarizeStage({ ...baseInput, invoke: makeInvoke("Run one") });
+    await runSummarizeStage({ ...baseInput, invoke: makeInvoke("Run two") });
+    await runSummarizeStage({ ...baseInput, invoke: makeInvoke("Run three") });
+
+    const studyAssetsDir = join(root, "_assets", "smith2026monotonic");
+    expect(await readFile(join(studyAssetsDir, "summary.v1.md"), "utf8")).toContain("## TL;DR\nRun one");
+    expect(await readFile(join(studyAssetsDir, "summary.v2.md"), "utf8")).toContain("## TL;DR\nRun two");
+    expect(await readFile(join(studyAssetsDir, "summary.current.md"), "utf8")).toContain("## TL;DR\nRun three");
   });
 
   test("includes full text in prompt input when provided", async () => {

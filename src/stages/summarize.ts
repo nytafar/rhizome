@@ -1,5 +1,6 @@
 import { mkdirSync } from "node:fs";
-import { join } from "node:path";
+import { readFile, readdir, rename, unlink } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { invokeClaudeCode, type ClaudeCodeResult } from "../ai/executor";
 import { buildSummarizerInput, type SummarizerInputStudy } from "../ai/input-builder";
 import { summarizerJsonSchema } from "../ai/schemas/summarizer";
@@ -97,6 +98,83 @@ function parseSummarizerOutput(stdout: string): SummarizerOutput {
   return candidate as SummarizerOutput;
 }
 
+function parseSummaryArchiveVersion(filename: string): number | undefined {
+  const match = /^summary\.v(\d+)\.md$/.exec(filename);
+  if (!match) {
+    return undefined;
+  }
+
+  const parsed = Number.parseInt(match[1], 10);
+  if (!Number.isInteger(parsed) || parsed <= 0) {
+    return undefined;
+  }
+
+  return parsed;
+}
+
+async function rotateExistingCurrentSummary(params: {
+  studyAssetsDir: string;
+  summaryCurrentPath: string;
+}): Promise<void> {
+  let currentSummary: string;
+  try {
+    currentSummary = await readFile(params.summaryCurrentPath, "utf8");
+  } catch (error) {
+    const maybeErrno = error as NodeJS.ErrnoException;
+    if (maybeErrno?.code === "ENOENT") {
+      return;
+    }
+
+    throw new Error(
+      `Failed to read existing summary at ${params.summaryCurrentPath}: ${String(maybeErrno?.message ?? error)}`,
+    );
+  }
+
+  let nextVersion = 1;
+  try {
+    const entries = await readdir(params.studyAssetsDir);
+    const maxVersion = entries.reduce((max, entry) => {
+      const version = parseSummaryArchiveVersion(entry);
+      return version !== undefined ? Math.max(max, version) : max;
+    }, 0);
+    nextVersion = maxVersion + 1;
+  } catch (error) {
+    const maybeErrno = error as NodeJS.ErrnoException;
+    throw new Error(
+      `Failed to inspect summary archives in ${params.studyAssetsDir}: ${String(maybeErrno?.message ?? error)}`,
+    );
+  }
+
+  const archivePath = join(params.studyAssetsDir, `summary.v${nextVersion.toString()}.md`);
+  try {
+    await Bun.write(archivePath, currentSummary);
+  } catch (error) {
+    throw new Error(
+      `Failed to archive existing summary to ${archivePath}: ${String(error)}`,
+    );
+  }
+}
+
+async function writeCurrentSummaryAtomically(params: {
+  summaryPath: string;
+  markdown: string;
+}): Promise<void> {
+  const tempPath = join(
+    dirname(params.summaryPath),
+    `summary.current.tmp.${Date.now().toString()}.md`,
+  );
+
+  await Bun.write(tempPath, params.markdown);
+  try {
+    await rename(tempPath, params.summaryPath);
+  } catch (error) {
+    await unlink(tempPath).catch(() => undefined);
+    throw new Error(
+      `Failed to finalize summary write at ${params.summaryPath}: ${String(error)}`,
+    );
+  }
+}
+
 export async function runSummarizeStage(
   input: SummarizeStageInput,
 ): Promise<SummarizeStageResult> {
@@ -144,7 +222,14 @@ export async function runSummarizeStage(
   const markdown = summaryJsonToMarkdown(normalizedOutput, meta);
 
   mkdirSync(studyAssetsDir, { recursive: true });
-  await Bun.write(summaryPath, markdown);
+  await rotateExistingCurrentSummary({
+    studyAssetsDir,
+    summaryCurrentPath: summaryPath,
+  });
+  await writeCurrentSummaryAtomically({
+    summaryPath,
+    markdown,
+  });
 
   return {
     summaryPath,

@@ -178,12 +178,71 @@ function hasClassificationSignal(study: StudyRecord): boolean {
   return classifyStatus === PipelineStepStatus.COMPLETE || Boolean(study.classifier_generated_at);
 }
 
-function buildSummaryVersions(study: StudyRecord): string[] | undefined {
-  if (!study.summary_path) {
+function parseSummaryVersionPath(pathValue: string):
+  | { path: string; label: string; order: number }
+  | undefined {
+  const normalizedPath = pathValue.trim();
+  if (!normalizedPath) {
     return undefined;
   }
 
-  return [formatWikilink(study.summary_path, "current")];
+  if (normalizedPath.endsWith("summary.current.md")) {
+    return {
+      path: normalizedPath,
+      label: "current",
+      order: Number.POSITIVE_INFINITY,
+    };
+  }
+
+  const versionMatch = /summary\.v(\d+)\.md$/.exec(normalizedPath);
+  if (!versionMatch) {
+    return undefined;
+  }
+
+  const version = Number.parseInt(versionMatch[1], 10);
+  if (!Number.isInteger(version) || version <= 0) {
+    return undefined;
+  }
+
+  return {
+    path: normalizedPath,
+    label: `v${version.toString()}`,
+    order: version,
+  };
+}
+
+function buildSummaryVersions(study: StudyRecord): string[] | undefined {
+  const candidates = new Map<string, { label: string; order: number }>();
+
+  const discovered = study.summary_versions ?? [];
+  for (const entry of discovered) {
+    const parsed = parseSummaryVersionPath(entry);
+    if (!parsed) {
+      continue;
+    }
+
+    candidates.set(parsed.path, { label: parsed.label, order: parsed.order });
+  }
+
+  if (study.summary_path) {
+    const current = parseSummaryVersionPath(study.summary_path);
+    if (current) {
+      candidates.set(current.path, { label: current.label, order: current.order });
+    }
+  }
+
+  if (candidates.size === 0) {
+    return undefined;
+  }
+
+  return [...candidates.entries()]
+    .sort((a, b) => {
+      if (a[1].order !== b[1].order) {
+        return a[1].order - b[1].order;
+      }
+      return a[0].localeCompare(b[0]);
+    })
+    .map(([path, meta]) => formatWikilink(path, meta.label));
 }
 
 function isStringArray(value: unknown): value is string[] {
