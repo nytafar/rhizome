@@ -18,6 +18,7 @@ import { runAuditCommand } from "../commands/audit";
 import { runLockClearCommand, runLockStatusCommand } from "../commands/lock";
 import {
   runTaxonomyApproveCommand,
+  runTaxonomyApplyCommand,
   runTaxonomyRejectCommand,
   runTaxonomyReviewCommand,
 } from "../commands/taxonomy";
@@ -2783,6 +2784,228 @@ describe("CLI command handlers", () => {
 
       expect(afterUnknownCount.count).toBe(beforeUnknownCount.count);
       database.close();
+    });
+  });
+
+  test("taxonomy apply rewrites approved proposals only", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const taxonomyPath = makeTaxonomyPath(vaultPath);
+      await mkdir(join(vaultPath, "Research", "_system"), { recursive: true });
+      await mkdir(join(vaultPath, "Research", "studies"), { recursive: true });
+
+      await writeFile(
+        taxonomyPath,
+        JSON.stringify(
+          {
+            version: 1,
+            groups: {
+              therapeutic_areas: {
+                values: {},
+                pending: {
+                  stress_resilience: {
+                    count: 2,
+                    first_seen_at: "2026-03-27T00:00:00.000Z",
+                    last_seen_at: "2026-03-27T00:00:00.000Z",
+                    sources: ["classifier"],
+                  },
+                },
+              },
+              mechanisms: { values: {}, pending: {} },
+              indications: { values: {}, pending: {} },
+              contraindications: { values: {}, pending: {} },
+              drug_interactions: { values: {}, pending: {} },
+              research_gaps: { values: {}, pending: {} },
+            },
+          },
+          null,
+          2,
+        ) + "\n",
+        "utf8",
+      );
+
+      const studyNotePath = join(vaultPath, "Research", "studies", "lane2026apply.md");
+      await writeFile(
+        studyNotePath,
+        matter.stringify("# Study\n", {
+          note_type: "study",
+          has_pdf: false,
+          has_fulltext: false,
+          has_summary: false,
+          has_classification: true,
+          pipeline_status: "partial",
+          title: "Apply test",
+          authors: [{ family: "Lane", given: "A" }],
+          year: 2026,
+          pdf_available: false,
+          tier_6_taxonomy: {
+            therapeutic_areas: ["stress_resilience"],
+            mechanisms: [],
+            indications: [],
+            contraindications: [],
+            drug_interactions: [],
+            research_gaps: [],
+          },
+          tier_7_provisional: [
+            {
+              group: "therapeutic_areas",
+              value: "new:stress_resilience",
+              confidence: 0.8,
+              proposed_by: "classifier",
+              logged_at: "2026-03-27T00:00:00.000Z",
+            },
+          ],
+        }),
+        "utf8",
+      );
+
+      await runTaxonomyApproveCommand(
+        { id: "proposal:therapeutic_areas:rename:stress_resilience", json: true },
+        { cwd: root },
+      );
+
+      const result = await runTaxonomyApplyCommand({ json: true }, { cwd: root });
+      expect(result.decisionCount).toBe(1);
+      expect(result.completed).toBe(1);
+
+      const parsed = matter(await readFile(studyNotePath, "utf8"));
+      const frontmatter = parseStudyFrontmatter(parsed.data);
+      expect(frontmatter.tier_6_taxonomy?.therapeutic_areas).toEqual(["stress_resilience"]);
+      expect(frontmatter.tier_7_provisional).toEqual([]);
+
+      const updatedTaxonomy = JSON.parse(await readFile(taxonomyPath, "utf8")) as {
+        groups: {
+          therapeutic_areas: {
+            pending: Record<string, unknown>;
+            values: Record<string, { aliases: string[]; count: number }>;
+          };
+        };
+      };
+      expect(updatedTaxonomy.groups.therapeutic_areas.pending.stress_resilience).toBeUndefined();
+      expect(updatedTaxonomy.groups.therapeutic_areas.values.stress_resilience.count).toBe(2);
+
+      const database = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      database.init();
+      const checkpoint = database.db
+        .query(
+          `
+          SELECT status, processed_notes, total_notes
+          FROM taxonomy_propagation_checkpoints
+          WHERE proposal_id = ?
+          LIMIT 1;
+          `,
+        )
+        .get("proposal:therapeutic_areas:rename:stress_resilience") as {
+        status: string;
+        processed_notes: number;
+        total_notes: number;
+      };
+      database.close();
+
+      expect(checkpoint.status).toBe("completed");
+      expect(checkpoint.processed_notes).toBe(1);
+      expect(checkpoint.total_notes).toBe(1);
+    });
+  });
+
+  test("taxonomy apply --resume continues from failed checkpoint", async () => {
+    await withTempRhizome(async (root, vaultPath) => {
+      const taxonomyPath = makeTaxonomyPath(vaultPath);
+      await mkdir(join(vaultPath, "Research", "_system"), { recursive: true });
+      await mkdir(join(vaultPath, "Research", "studies"), { recursive: true });
+
+      await writeFile(
+        taxonomyPath,
+        JSON.stringify(
+          {
+            version: 1,
+            groups: {
+              therapeutic_areas: { values: {}, pending: {} },
+              mechanisms: {
+                values: {},
+                pending: {
+                  hpa_axis_resilience: {
+                    count: 1,
+                    first_seen_at: "2026-03-27T00:00:00.000Z",
+                    last_seen_at: "2026-03-27T00:00:00.000Z",
+                    sources: ["classifier"],
+                  },
+                },
+              },
+              indications: { values: {}, pending: {} },
+              contraindications: { values: {}, pending: {} },
+              drug_interactions: { values: {}, pending: {} },
+              research_gaps: { values: {}, pending: {} },
+            },
+          },
+          null,
+          2,
+        ) + "\n",
+        "utf8",
+      );
+
+      const firstNote = join(vaultPath, "Research", "studies", "lane2026resumea.md");
+      const secondNote = join(vaultPath, "Research", "studies", "lane2026resumeb.md");
+
+      const validNote = matter.stringify("# A\n", {
+        note_type: "study",
+        has_pdf: false,
+        has_fulltext: false,
+        has_summary: false,
+        has_classification: true,
+        pipeline_status: "partial",
+        title: "A",
+        authors: [{ family: "Lane", given: "A" }],
+        year: 2026,
+        pdf_available: false,
+        tier_6_taxonomy: {
+          therapeutic_areas: [],
+          mechanisms: ["hpa_axis_resilience"],
+          indications: [],
+          contraindications: [],
+          drug_interactions: [],
+          research_gaps: [],
+        },
+        tier_7_provisional: [],
+      });
+
+      await writeFile(firstNote, validNote, "utf8");
+      await writeFile(secondNote, "---\ntitle: bad\n", "utf8");
+
+      await runTaxonomyApproveCommand(
+        { id: "proposal:mechanisms:rename:hpa_axis_resilience", json: true },
+        { cwd: root },
+      );
+
+      await expect(runTaxonomyApplyCommand({ json: true }, { cwd: root })).rejects.toThrow(
+        "Malformed frontmatter",
+      );
+
+      await writeFile(secondNote, validNote.replace("# A", "# B"), "utf8");
+
+      const resumeResult = await runTaxonomyApplyCommand({ resume: true, json: true }, { cwd: root });
+      expect(resumeResult.completed).toBe(1);
+
+      const db = new Database({ path: join(root, CANONICAL_WORKSPACE_DIR, "siss.db") });
+      db.init();
+      const checkpoint = db.db
+        .query(
+          `
+          SELECT status, processed_notes, total_notes
+          FROM taxonomy_propagation_checkpoints
+          WHERE proposal_id = ?
+          LIMIT 1;
+          `,
+        )
+        .get("proposal:mechanisms:rename:hpa_axis_resilience") as {
+        status: string;
+        processed_notes: number;
+        total_notes: number;
+      };
+      db.close();
+
+      expect(checkpoint.status).toBe("completed");
+      expect(checkpoint.processed_notes).toBe(2);
+      expect(checkpoint.total_notes).toBe(2);
     });
   });
 

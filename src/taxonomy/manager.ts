@@ -9,6 +9,7 @@ import type {
   RecordUsageInput,
   TaxonomyDocument,
   TaxonomyGroupName,
+  TaxonomyProposalOperation,
 } from "./types";
 import {
   createEmptyTaxonomyState,
@@ -337,6 +338,57 @@ export class TaxonomyManager {
       state: this.validateOrThrow(state),
       promoted,
     };
+  }
+
+  applyProposalDecision(
+    state: TaxonomyDocument,
+    input: {
+      group: TaxonomyGroupName;
+      operation: TaxonomyProposalOperation;
+      sourceValue: string;
+      targetValue: string;
+      appliedAt?: string;
+    },
+  ): TaxonomyDocument {
+    this.assertSupportedGroup(input.group);
+
+    const sourceValue = normalizeTaxonomyValue(input.sourceValue);
+    const targetValue = normalizeTaxonomyValue(input.targetValue);
+
+    if (!sourceValue || !targetValue) {
+      throw new Error("Taxonomy proposal application requires non-empty source and target values");
+    }
+
+    const appliedAt = input.appliedAt ?? this.now().toISOString();
+    const groupState = state.groups[input.group];
+
+    const pendingEntry = groupState.pending[sourceValue];
+    if (pendingEntry) {
+      const existingTarget = groupState.values[targetValue];
+      if (existingTarget) {
+        const aliases = existingTarget.aliases.includes(sourceValue)
+          ? existingTarget.aliases
+          : [...existingTarget.aliases, sourceValue];
+
+        groupState.values[targetValue] = {
+          ...existingTarget,
+          aliases,
+          count: existingTarget.count + pendingEntry.count,
+          last_used_at: appliedAt,
+        };
+      } else {
+        groupState.values[targetValue] = {
+          count: pendingEntry.count,
+          aliases: [sourceValue],
+          created_at: appliedAt,
+          last_used_at: appliedAt,
+        };
+      }
+
+      delete groupState.pending[sourceValue];
+    }
+
+    return this.validateOrThrow(state);
   }
 
   getState(): TaxonomyDocument {

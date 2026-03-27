@@ -10,6 +10,7 @@ import {
   writeTaxonomyReviewArtifact,
   type TaxonomyReviewProposal,
 } from "../../taxonomy/review";
+import { applyApprovedTaxonomyDecisions } from "../../taxonomy/propagation";
 import {
   taxonomyDecisionStatusSchema,
   taxonomyOperationTypeSchema,
@@ -28,6 +29,11 @@ export interface TaxonomyDecisionCommandOptions {
   json?: boolean;
 }
 
+export interface TaxonomyApplyCommandOptions {
+  resume?: boolean;
+  json?: boolean;
+}
+
 export interface TaxonomyReviewCommandResult {
   artifactPath: string;
   proposals: TaxonomyReviewProposal[];
@@ -43,6 +49,13 @@ export interface TaxonomyDecisionCommandResult {
   decidedBy?: string;
   rationale?: string;
   decidedAt: string;
+}
+
+export interface TaxonomyApplyCommandResult {
+  resume: boolean;
+  decisionCount: number;
+  completed: number;
+  skipped: number;
 }
 
 export interface TaxonomyCommandDeps {
@@ -119,6 +132,16 @@ function renderDecisionText(result: TaxonomyDecisionCommandResult): string {
     `Operation: ${result.operationType}`,
     `Group: ${result.groupName}`,
     `Source -> Target: ${result.sourceValue} -> ${result.targetValue}`,
+    "",
+  ].join("\n");
+}
+
+function renderApplyText(result: TaxonomyApplyCommandResult): string {
+  return [
+    `Taxonomy apply complete${result.resume ? " (resume)" : ""}`,
+    `Approved decisions: ${result.decisionCount}`,
+    `Completed: ${result.completed}`,
+    `Skipped: ${result.skipped}`,
     "",
   ].join("\n");
 }
@@ -279,6 +302,69 @@ async function runTaxonomyDecisionCommand(params: {
       stdout.write(`${JSON.stringify(result, null, 2)}\n`);
     } else {
       stdout.write(renderDecisionText(result));
+    }
+
+    return result;
+  } finally {
+    await lock.release();
+    database.close();
+  }
+}
+
+export async function runTaxonomyApplyCommand(
+  options: TaxonomyApplyCommandOptions,
+  deps: TaxonomyCommandDeps = {},
+): Promise<TaxonomyApplyCommandResult> {
+  const cwd = deps.cwd ?? process.cwd();
+  const stdout = deps.stdout ?? process.stdout;
+  const config = await loadCommandConfig(cwd, deps);
+
+  const database = new Database({ path: resolveDbPath(cwd, config) });
+  database.init();
+
+  const lock = new WriterLock({
+    lockPath: resolveLockPath(cwd, config),
+    staleTimeoutMs: config.pipeline.lock_stale_minutes * 60 * 1000,
+  });
+
+  try {
+    await lock.acquire(`rhizome taxonomy apply${options.resume ? " --resume" : ""}`);
+  } catch (error) {
+    database.close();
+
+    if (error instanceof WriterLockError) {
+      throw withHolder(error);
+    }
+
+    throw error;
+  }
+
+  try {
+    const taxonomy = TaxonomyManager.fromConfig(config);
+    const applyResult = await applyApprovedTaxonomyDecisions({
+      db: database.db,
+      taxonomyManager: taxonomy,
+      vaultPath: config.vault.path,
+      researchRoot: config.vault.research_root,
+      options: {
+        resume: options.resume,
+      },
+    });
+
+    const completed = applyResult.decisions.filter((decision) => decision.status === "completed").length;
+    const skipped = applyResult.decisions.filter((decision) => decision.status === "skipped").length;
+
+    const result: TaxonomyApplyCommandResult = {
+      resume: options.resume ?? false,
+      decisionCount: applyResult.decisions.length,
+      completed,
+      skipped,
+    };
+
+    if (options.json) {
+      stdout.write(`${JSON.stringify(result, null, 2)}\n`);
+    } else {
+      stdout.write(renderApplyText(result));
     }
 
     return result;
