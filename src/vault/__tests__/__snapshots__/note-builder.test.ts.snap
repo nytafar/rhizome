@@ -41,6 +41,47 @@ pdf_source: unpaywall
 summary_skill: summarizer@1.0
 classifier_skill: —
 summary_generated_at: '2026-03-25T17:30:00Z'
+tier_4:
+  study_type: randomized_controlled_trial
+  sample_size: 80
+  duration_weeks: 8
+  population: adults
+  control: placebo
+  blinding: double_blind
+  primary_outcome: stress_score
+  outcome_direction: positive
+  effect_size: moderate
+  significance: p<0.05
+  evidence_quality: moderate
+  funding_source: null
+  conflict_of_interest: null
+tier_5:
+  herb_species:
+    - Withania somnifera
+  common_names:
+    - ashwagandha
+  active_compounds: []
+  plant_parts: []
+  extraction_types: []
+  dosages: []
+  adverse_events: []
+  safety_rating: good
+tier_6_taxonomy:
+  therapeutic_areas:
+    - stress
+  mechanisms:
+    - cortisol_modulation
+  indications:
+    - stress_management
+  contraindications: []
+  drug_interactions: []
+  research_gaps: []
+tier_7_provisional:
+  - group: mechanisms
+    value: 'new:hpa_axis_resilience'
+    confidence: 0.72
+    proposed_by: classifier
+    logged_at: '2026-03-25T17:35:00Z'
 summary_versions:
   - '[[Research/studies/_assets/smith2023ashwagandha/summary.current.md|current]]'
 ---

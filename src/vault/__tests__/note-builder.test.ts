@@ -65,6 +65,48 @@ function baseStudyFixture(): StudyRecord {
     summary_skill_version: "1.0",
     summary_model: "claude-opus-4-5",
     summary_generated_at: "2026-03-25T17:30:00Z",
+    tier_4: {
+      study_type: "randomized_controlled_trial",
+      sample_size: 80,
+      duration_weeks: 8,
+      population: "adults",
+      control: "placebo",
+      blinding: "double_blind",
+      primary_outcome: "stress_score",
+      outcome_direction: "positive",
+      effect_size: "moderate",
+      significance: "p<0.05",
+      evidence_quality: "moderate",
+      funding_source: null,
+      conflict_of_interest: null,
+    },
+    tier_5: {
+      herb_species: ["Withania somnifera"],
+      common_names: ["ashwagandha"],
+      active_compounds: [],
+      plant_parts: [],
+      extraction_types: [],
+      dosages: [],
+      adverse_events: [],
+      safety_rating: "good",
+    },
+    tier_6_taxonomy: {
+      therapeutic_areas: ["stress"],
+      mechanisms: ["cortisol_modulation"],
+      indications: ["stress_management"],
+      contraindications: [],
+      drug_interactions: [],
+      research_gaps: [],
+    },
+    tier_7_provisional: [
+      {
+        group: "mechanisms",
+        value: "new:hpa_axis_resilience",
+        confidence: 0.72,
+        proposed_by: "classifier",
+        logged_at: "2026-03-25T17:35:00Z",
+      },
+    ],
   };
 }
 
@@ -83,6 +125,10 @@ describe("buildStudyNoteMarkdown", () => {
     expect(frontmatter.summary).toBe(
       "[[Research/studies/_assets/smith2023ashwagandha/summary.current.md|AI Summary]]",
     );
+    expect(frontmatter.tier_4?.sample_size).toBe(80);
+    expect(frontmatter.tier_5?.safety_rating).toBe("good");
+    expect(frontmatter.tier_6_taxonomy?.mechanisms).toEqual(["cortisol_modulation"]);
+    expect(frontmatter.tier_7_provisional?.[0]?.value).toBe("new:hpa_axis_resilience");
   });
 
   test("preserves user-managed frontmatter fields and write-once tags when existing frontmatter is provided", () => {
@@ -177,6 +223,10 @@ describe("buildStudyNoteMarkdown", () => {
     delete study.classifier_generated_at;
     delete study.classifier_model;
     delete study.classifier_skill_version;
+    delete study.tier_4;
+    delete study.tier_5;
+    delete study.tier_6_taxonomy;
+    delete study.tier_7_provisional;
 
     const markdown = buildStudyNoteMarkdown(study);
 
@@ -188,5 +238,34 @@ describe("buildStudyNoteMarkdown", () => {
 
     const parsed = matter(markdown);
     expect(() => parseStudyFrontmatter(parsed.data)).not.toThrow();
+    expect(parsed.data).not.toHaveProperty("tier_4");
+    expect(parsed.data).not.toHaveProperty("tier_5");
+    expect(parsed.data).not.toHaveProperty("tier_6_taxonomy");
+    expect(parsed.data).not.toHaveProperty("tier_7_provisional");
+  });
+
+  test("projects provisional-only classifier values without requiring fixed tier objects", () => {
+    const study = baseStudyFixture();
+    delete study.tier_4;
+    delete study.tier_5;
+    delete study.tier_6_taxonomy;
+    study.tier_7_provisional = [
+      {
+        group: "research_gaps",
+        value: "new:long_term_safety_in_seniors",
+        confidence: 0.51,
+        proposed_by: "classifier",
+        logged_at: "2026-03-25T17:35:00Z",
+      },
+    ];
+
+    const markdown = buildStudyNoteMarkdown(study);
+    const parsed = matter(markdown);
+    const frontmatter = parseStudyFrontmatter(parsed.data);
+
+    expect(frontmatter.tier_4).toBeUndefined();
+    expect(frontmatter.tier_5).toBeUndefined();
+    expect(frontmatter.tier_6_taxonomy).toBeUndefined();
+    expect(frontmatter.tier_7_provisional).toEqual(study.tier_7_provisional);
   });
 });

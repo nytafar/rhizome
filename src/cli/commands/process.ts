@@ -15,6 +15,7 @@ import {
 } from "../../types/pipeline";
 import { runSummarizeStage } from "../../stages/summarize";
 import { runClassifyStage } from "../../stages/classify";
+import { classifierOutputSchema } from "../../ai/schemas/classifier";
 import { runPdfFetchStage } from "../../stages/pdf-fetch";
 import { runFulltextMarkerStage } from "../../stages/fulltext-marker";
 import { runVaultWriteStage } from "../../stages/vault-write";
@@ -367,6 +368,97 @@ function extractFulltextPathFromJobMetadata(
   }
 }
 
+function extractClassificationMetadataFromJobMetadata(
+  db: BunSQLiteDatabase,
+  rhizomeId: string,
+): Pick<
+  StudyRecord,
+  | "classifier_model"
+  | "classifier_skill_version"
+  | "classifier_generated_at"
+  | "tier_4"
+  | "tier_5"
+  | "tier_6_taxonomy"
+  | "tier_7_provisional"
+  | "taxonomy_provisional"
+> {
+  const row = db
+    .query(
+      `
+      SELECT metadata
+      FROM jobs
+      WHERE rhizome_id = ?
+        AND stage = ?
+        AND status = 'complete'
+        AND metadata IS NOT NULL
+      ORDER BY id DESC
+      LIMIT 1;
+      `,
+    )
+    .get(rhizomeId, PipelineStep.CLASSIFY) as { metadata: string } | null;
+
+  if (!row?.metadata) {
+    return {};
+  }
+
+  try {
+    const parsed = JSON.parse(row.metadata) as {
+      classifier_model?: unknown;
+      classifier_skill_version?: unknown;
+      classifier_generated_at?: unknown;
+      source?: unknown;
+      tier_4?: unknown;
+      tier_5?: unknown;
+      tier_6_taxonomy?: unknown;
+      tier_7_provisional?: unknown;
+    };
+
+    const validation = classifierOutputSchema.safeParse({
+      source: parsed.source,
+      tier_4: parsed.tier_4,
+      tier_5: parsed.tier_5,
+      tier_6_taxonomy: parsed.tier_6_taxonomy,
+      tier_7_provisional: parsed.tier_7_provisional,
+    });
+
+    if (!validation.success) {
+      return {};
+    }
+
+    const classifierGeneratedAt =
+      typeof parsed.classifier_generated_at === "string"
+      && parsed.classifier_generated_at.trim().length > 0
+        ? parsed.classifier_generated_at
+        : undefined;
+
+    const tier7WithProvenance = validation.data.tier_7_provisional.map((candidate) => ({
+      ...candidate,
+      proposed_by: "classifier",
+      logged_at: classifierGeneratedAt ?? new Date().toISOString(),
+    }));
+
+    return {
+      classifier_model:
+        typeof parsed.classifier_model === "string" && parsed.classifier_model.trim().length > 0
+          ? parsed.classifier_model
+          : undefined,
+      classifier_skill_version:
+        typeof parsed.classifier_skill_version === "string"
+        && parsed.classifier_skill_version.trim().length > 0
+          ? parsed.classifier_skill_version
+          : undefined,
+      classifier_generated_at: classifierGeneratedAt,
+      tier_4: validation.data.tier_4,
+      tier_5: validation.data.tier_5,
+      tier_6_taxonomy: validation.data.tier_6_taxonomy,
+      tier_7_provisional: tier7WithProvenance,
+      taxonomy_provisional: tier7WithProvenance,
+    };
+  } catch {
+    return {};
+  }
+}
+
 function resolvePathWithinVault(vaultPath: string, candidatePath: string): string | undefined {
   const vaultRoot = resolve(vaultPath);
   const resolvedCandidate = isAbsolute(candidatePath)
@@ -493,6 +585,10 @@ function loadStudyForVaultWrite(params: {
     row.rhizome_id,
     params.config.vault.path,
   );
+  const classificationMetadata = extractClassificationMetadataFromJobMetadata(
+    params.db,
+    row.rhizome_id,
+  );
   const lastPipelineRun =
     findLastPipelineRunDate(params.db, row.rhizome_id) ?? params.now().toISOString().slice(0, 10);
 
@@ -518,6 +614,7 @@ function loadStudyForVaultWrite(params: {
     source_collections: parseStringArrayJson(row.source_collections_json),
     fulltext_path: fulltextPath,
     summary_path: summaryPath,
+    ...classificationMetadata,
     pdf_available: pdfMetadata.pdfAvailable,
     pdf_source: pdfMetadata.pdfSource,
     pdf_path: pdfMetadata.pdfPath,

@@ -1,6 +1,10 @@
 import { z } from "zod";
 import type {
   Author,
+  ClassifierTier4,
+  ClassifierTier5,
+  ClassifierTier6Taxonomy,
+  ProvisionalTaxonomyValue,
   StudyFrontmatterProjection,
 } from "../types/study";
 
@@ -13,6 +17,58 @@ export const AuthorSchema: z.ZodType<Author> = z
   .object({
     family: z.string().min(1),
     given: z.string().min(1),
+  })
+  .strict();
+
+export const Tier4Schema: z.ZodType<ClassifierTier4> = z
+  .object({
+    study_type: z.string().nullable(),
+    sample_size: z.number().int().nullable(),
+    duration_weeks: z.number().nullable(),
+    population: z.string().nullable(),
+    control: z.string().nullable(),
+    blinding: z.string().nullable(),
+    primary_outcome: z.string().nullable(),
+    outcome_direction: z.enum(["positive", "negative", "neutral", "mixed"]).nullable(),
+    effect_size: z.string().nullable(),
+    significance: z.string().nullable(),
+    evidence_quality: z.enum(["high", "moderate", "low"]).nullable(),
+    funding_source: z.string().nullable(),
+    conflict_of_interest: z.boolean().nullable(),
+  })
+  .strict();
+
+export const Tier5Schema: z.ZodType<ClassifierTier5> = z
+  .object({
+    herb_species: z.array(z.string()),
+    common_names: z.array(z.string()),
+    active_compounds: z.array(z.string()),
+    plant_parts: z.array(z.string()),
+    extraction_types: z.array(z.string()),
+    dosages: z.array(z.string()),
+    adverse_events: z.array(z.string()),
+    safety_rating: z.enum(["good", "caution", "contraindicated"]).nullable(),
+  })
+  .strict();
+
+export const Tier6TaxonomySchema: z.ZodType<ClassifierTier6Taxonomy> = z
+  .object({
+    therapeutic_areas: z.array(z.string()),
+    mechanisms: z.array(z.string()),
+    indications: z.array(z.string()),
+    contraindications: z.array(z.string()),
+    drug_interactions: z.array(z.string()),
+    research_gaps: z.array(z.string()),
+  })
+  .strict();
+
+export const Tier7ProvisionalCandidateSchema: z.ZodType<ProvisionalTaxonomyValue> = z
+  .object({
+    group: z.string().min(1),
+    value: z.string().regex(/^new:.+/, "provisional values must use new:<value> format"),
+    confidence: z.number().min(0).max(1),
+    proposed_by: z.string().min(1),
+    logged_at: isoDateTimeSchema,
   })
   .strict();
 
@@ -66,6 +122,10 @@ export const StudyFrontmatterSchema: z.ZodType<StudyFrontmatterProjection> = z
     classifier_skill: z.string().min(1).optional(),
     summary_generated_at: isoDateTimeSchema.optional(),
     classifier_generated_at: isoDateTimeSchema.optional(),
+    tier_4: Tier4Schema.optional(),
+    tier_5: Tier5Schema.optional(),
+    tier_6_taxonomy: Tier6TaxonomySchema.optional(),
+    tier_7_provisional: z.array(Tier7ProvisionalCandidateSchema).max(100).optional(),
     summary_versions: z.array(wikilinkSchema).optional(),
 
     // User fields

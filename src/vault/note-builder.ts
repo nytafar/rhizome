@@ -340,6 +340,10 @@ export function buildStudyFrontmatterProjection(study: StudyRecord): StudyFrontm
     classifier_skill: normalizeSkillLabel("classify", study.classifier_skill_version),
     summary_generated_at: study.summary_generated_at,
     classifier_generated_at: study.classifier_generated_at,
+    tier_4: study.tier_4,
+    tier_5: study.tier_5,
+    tier_6_taxonomy: study.tier_6_taxonomy,
+    tier_7_provisional: study.tier_7_provisional ?? study.taxonomy_provisional,
     summary_versions: buildSummaryVersions(study),
   });
 }

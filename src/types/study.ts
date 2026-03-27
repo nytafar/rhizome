@@ -16,6 +16,42 @@ export interface ProvisionalTaxonomyValue {
   logged_at: string;
 }
 
+export interface ClassifierTier4 {
+  study_type: string | null;
+  sample_size: number | null;
+  duration_weeks: number | null;
+  population: string | null;
+  control: string | null;
+  blinding: string | null;
+  primary_outcome: string | null;
+  outcome_direction: "positive" | "negative" | "neutral" | "mixed" | null;
+  effect_size: string | null;
+  significance: string | null;
+  evidence_quality: "high" | "moderate" | "low" | null;
+  funding_source: string | null;
+  conflict_of_interest: boolean | null;
+}
+
+export interface ClassifierTier5 {
+  herb_species: string[];
+  common_names: string[];
+  active_compounds: string[];
+  plant_parts: string[];
+  extraction_types: string[];
+  dosages: string[];
+  adverse_events: string[];
+  safety_rating: "good" | "caution" | "contraindicated" | null;
+}
+
+export interface ClassifierTier6Taxonomy {
+  therapeutic_areas: string[];
+  mechanisms: string[];
+  indications: string[];
+  contraindications: string[];
+  drug_interactions: string[];
+  research_gaps: string[];
+}
+
 export interface StudyRecord {
   // === Identity ===
   siss_id: string;
@@ -67,6 +103,10 @@ export interface StudyRecord {
   classifier_model?: string;
   summary_generated_at?: string;
   classifier_generated_at?: string;
+  tier_4?: ClassifierTier4;
+  tier_5?: ClassifierTier5;
+  tier_6_taxonomy?: ClassifierTier6Taxonomy;
+  tier_7_provisional?: ProvisionalTaxonomyValue[];
   taxonomy_provisional?: ProvisionalTaxonomyValue[];
 
   // === Source Tracking ===
@@ -126,6 +166,10 @@ export interface StudyFrontmatterProjection {
   classifier_skill?: string;
   summary_generated_at?: string;
   classifier_generated_at?: string;
+  tier_4?: ClassifierTier4;
+  tier_5?: ClassifierTier5;
+  tier_6_taxonomy?: ClassifierTier6Taxonomy;
+  tier_7_provisional?: ProvisionalTaxonomyValue[];
   summary_versions?: string[];
 
   // User fields
