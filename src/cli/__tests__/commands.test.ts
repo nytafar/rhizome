@@ -14,6 +14,7 @@ import { runProcessCommand } from "../commands/process";
 import { runStatusCommand } from "../commands/status";
 import { runRetryCommand } from "../commands/retry";
 import { runReprocessCommand } from "../commands/reprocess";
+import { runAuditCommand } from "../commands/audit";
 import { runLockClearCommand, runLockStatusCommand } from "../commands/lock";
 import { CANONICAL_WORKSPACE_DIR, LEGACY_WORKSPACE_DIR } from "../../config/workspace-contract";
 import type { ZoteroItem } from "../../zotero/client";
@@ -179,6 +180,54 @@ function seedRetryStudy(params: {
       params.title,
       PipelineOverallStatus.NEEDS_ATTENTION,
       "{}",
+    );
+}
+
+function seedPipelineRun(params: {
+  database: Database;
+  rhizomeId: string;
+  runId: string;
+  step: PipelineStep;
+  status: "started" | "completed" | "failed" | "skipped";
+  retries?: number;
+  startedAt?: string | null;
+  completedAt?: string | null;
+  skipReason?: string | null;
+  error?: string | null;
+  model?: string | null;
+  skill?: string | null;
+}): void {
+  params.database.db
+    .query(
+      `
+      INSERT INTO pipeline_runs (
+        rhizome_id,
+        run_id,
+        step,
+        status,
+        started_at,
+        completed_at,
+        retries,
+        skip_reason,
+        error,
+        model,
+        skill
+      )
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+      `,
+    )
+    .run(
+      params.rhizomeId,
+      params.runId,
+      params.step,
+      params.status,
+      params.startedAt ?? null,
+      params.completedAt ?? null,
+      params.retries ?? 0,
+      params.skipReason ?? null,
+      params.error ?? null,
+      params.model ?? null,
+      params.skill ?? null,
     );
 }
 
@@ -1672,6 +1721,143 @@ describe("CLI command handlers", () => {
       ).rejects.toThrow("writer already active");
 
       await lock.release();
+    });
+  });
+
+  test("audit returns deterministic filtered run history with JSON-stable null fields", async () => {
+    await withTempRhizome(async (root) => {
+      const dbPath = join(root, CANONICAL_WORKSPACE_DIR, "siss.db");
+      const database = new Database({ path: dbPath });
+      database.init();
+
+      seedRetryStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440201",
+        citekey: "lane2026audittarget",
+        title: "Audit target",
+      });
+      seedRetryStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440202",
+        citekey: "lane2026auditother",
+        title: "Audit other",
+      });
+
+      seedPipelineRun({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440201",
+        runId: "run-target-1",
+        step: PipelineStep.SUMMARIZE,
+        status: "failed",
+        retries: 2,
+        error: "summarizer timeout",
+        model: null,
+        skill: null,
+      });
+      seedPipelineRun({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440201",
+        runId: "run-target-2",
+        step: PipelineStep.SUMMARIZE,
+        status: "completed",
+        retries: 0,
+        model: "gpt-4.1-mini",
+        skill: "summarize@v2",
+      });
+      seedPipelineRun({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440202",
+        runId: "run-other-1",
+        step: PipelineStep.CLASSIFY,
+        status: "failed",
+        retries: 1,
+        error: "classifier error",
+        model: "claude-3.5-haiku",
+        skill: "classify@v1",
+      });
+
+      database.close();
+
+      const citekeyFiltered = await runAuditCommand(
+        { citekey: "lane2026audittarget", stage: PipelineStep.SUMMARIZE, json: true },
+        { cwd: root },
+      );
+
+      expect(citekeyFiltered.filters.citekey).toBe("lane2026audittarget");
+      expect(citekeyFiltered.filters.stage).toBe(PipelineStep.SUMMARIZE);
+      expect(citekeyFiltered.count).toBe(2);
+      expect(citekeyFiltered.runs.map((run) => run.run_id)).toEqual(["run-target-2", "run-target-1"]);
+      expect(citekeyFiltered.runs[1]?.model).toBeNull();
+      expect(citekeyFiltered.runs[1]?.skill).toBeNull();
+
+      const errorsOnly = await runAuditCommand({ errors: true, json: true }, { cwd: root });
+      expect(errorsOnly.runs.every((run) => run.status === "failed" || run.error !== null)).toBe(true);
+      expect(errorsOnly.runs.map((run) => run.run_id)).toEqual(["run-other-1", "run-target-1"]);
+
+      const newestSingle = await runAuditCommand({ last: 1, json: true }, { cwd: root });
+      expect(newestSingle.count).toBe(1);
+      expect(newestSingle.runs[0]?.run_id).toBe("run-other-1");
+    });
+  });
+
+  test("audit validates malformed options and unknown citekey", async () => {
+    await withTempRhizome(async (root) => {
+      await expect(runAuditCommand({ last: 0 }, { cwd: root })).rejects.toThrow(
+        "--last must be a positive integer between 1 and 200",
+      );
+      await expect(runAuditCommand({ last: -3 }, { cwd: root })).rejects.toThrow(
+        "--last must be a positive integer between 1 and 200",
+      );
+      await expect(runAuditCommand({ last: Number.NaN }, { cwd: root })).rejects.toThrow(
+        "--last must be a positive integer between 1 and 200",
+      );
+      await expect(runAuditCommand({ stage: "bogus_stage" }, { cwd: root })).rejects.toThrow(
+        "Unknown stage 'bogus_stage'. Valid stages:",
+      );
+      await expect(runAuditCommand({ citekey: "lane2026missingaudit" }, { cwd: root })).rejects.toThrow(
+        "Study not found for citekey=lane2026missingaudit",
+      );
+    });
+  });
+
+  test("audit returns stable empty results and caps oversized --last", async () => {
+    await withTempRhizome(async (root) => {
+      const dbPath = join(root, CANONICAL_WORKSPACE_DIR, "siss.db");
+      const database = new Database({ path: dbPath });
+      database.init();
+
+      seedRetryStudy({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440203",
+        citekey: "lane2026auditempty",
+        title: "Audit empty",
+      });
+
+      seedPipelineRun({
+        database,
+        rhizomeId: "550e8400-e29b-41d4-a716-446655440203",
+        runId: "run-empty-1",
+        step: PipelineStep.PDF_FETCH,
+        status: "completed",
+      });
+
+      database.close();
+
+      const empty = await runAuditCommand(
+        { citekey: "lane2026auditempty", stage: PipelineStep.CLASSIFY, json: true },
+        { cwd: root },
+      );
+      expect(empty.count).toBe(0);
+      expect(empty.runs).toEqual([]);
+      expect(empty.filters).toEqual({
+        citekey: "lane2026auditempty",
+        stage: PipelineStep.CLASSIFY,
+        errorsOnly: false,
+        last: 25,
+      });
+
+      const capped = await runAuditCommand({ last: 999, json: true }, { cwd: root });
+      expect(capped.filters.last).toBe(200);
     });
   });
 

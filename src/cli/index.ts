@@ -6,6 +6,7 @@ import { runProcessCommand, type ProcessCommandOptions } from "./commands/proces
 import { runStatusCommand, type StatusCommandOptions } from "./commands/status";
 import { runRetryCommand, type RetryCommandOptions } from "./commands/retry";
 import { runReprocessCommand, type ReprocessCommandOptions } from "./commands/reprocess";
+import { runAuditCommand, type AuditCommandOptions } from "./commands/audit";
 import {
   runLockStatusCommand,
   runLockClearCommand,
@@ -94,6 +95,23 @@ export function createCliProgram(): Command {
     .option("--json", "Emit machine-readable JSON")
     .action(async (options: ReprocessCommandOptions) => {
       await runReprocessCommand(options);
+    });
+
+  program
+    .command("audit")
+    .description("Inspect historical pipeline run outcomes")
+    .option(
+      "--citekey <key>",
+      "Filter audit history to a specific study citekey (compat selector; planned deprecation after first stable build in favor of rhizome_id/doi/pmid selectors)",
+    )
+    .option("--stage <name>", "Filter by pipeline stage")
+    .option("--errors", "Show only failed/error rows")
+    .option("--last <n>", "Return most recent N rows (default/cap applied)", (value) =>
+      Number.parseInt(value, 10),
+    )
+    .option("--json", "Emit machine-readable JSON")
+    .action(async (options: AuditCommandOptions) => {
+      await runAuditCommand(options);
     });
 
   const sync = program.command("sync").description("Sync external sources");
